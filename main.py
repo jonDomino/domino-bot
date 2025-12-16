@@ -26,6 +26,12 @@ except ImportError:
 from utils import config
 from utils.telegram_api import send_telegram_message, poll_updates
 from utils.kalshi_api import load_creds, make_request
+from pricing.conversion import cents_to_american, american_to_cents
+from pricing.fees import fee_dollars, maker_fee_cents, adjust_maker_price_for_fees, level_all_in_cost, max_affordable_contracts
+from parsing.turnin import parse_turnin
+from parsing.commands import parse_kill_command, parse_totals_command
+from parsing.validators import validate_rotation_parity, find_totals_market
+from pricing.conversion import cents_to_american, american_to_cents
 
 # League-scoped constants (imported from config)
 LEAGUE = config.LEAGUE
@@ -75,195 +81,12 @@ KALSHI_EVENTS_TTL = 120  # seconds
 # ============================================================================
 # Kill Command Parsing
 # ============================================================================
-
-def parse_totals_command(msg: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a totals read-only command.
-    
-    Format: totals <rotation> <line>
-    Example: "totals 891 141.5"
-    
-    Returns dict with:
-    - command_type: "totals_view"
-    - rotation_number: int
-    - line: float
-    Returns None if not a totals command.
-    """
-    msg = msg.strip()
-    msg_lower = msg.lower()
-    
-    # Check for "totals" command
-    if not msg_lower.startswith("totals "):
-        return None
-    
-    remaining = msg[7:].strip()  # Remove "totals " prefix
-    
-    # Parse: <rotation> <line>
-    totals_pattern = r'^(\d+)\s+(\d+\.?\d*)$'
-    totals_match = re.match(totals_pattern, remaining)
-    
-    if totals_match:
-        rotation_number = int(totals_match.group(1))
-        line = float(totals_match.group(2))
-        
-        return {
-            "command_type": "totals_view",
-            "rotation_number": rotation_number,
-            "line": line
-        }
-    
-    return None
-
-
-def parse_kill_command(msg: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a kill command message.
-    
-    Supported formats:
-    - "kill" → cancel all open resting orders
-    - "kill {rotation_number}" → cancel all open resting orders for that roto
-    
-    Returns dict with:
-    - command_type: "kill_all" or "kill_roto"
-    - rotation_number: int (only for kill_roto)
-    Returns None if not a kill command.
-    """
-    msg = msg.strip()
-    msg_lower = msg.lower()
-    
-    # Check for "kill" command
-    if msg_lower == "kill":
-        return {
-            "command_type": "kill_all"
-        }
-    
-    # Check for "kill {roto}" format
-    kill_roto_pattern = r'^kill\s+(\d+)$'
-    kill_roto_match = re.match(kill_roto_pattern, msg_lower)
-    
-    if kill_roto_match:
-        rotation_number = int(kill_roto_match.group(1))
-        return {
-            "command_type": "kill_roto",
-            "rotation_number": rotation_number
-        }
-    
-    return None
-
+# Moved to parsing/commands.py
 
 # ============================================================================
 # Turn-In Parsing
 # ============================================================================
-
-def parse_turnin(msg: str) -> Optional[Dict[str, Any]]:
-    """
-    Parse a turn-in message (moneyline or totals).
-    
-    Taker format (unchanged):
-    - Moneyline: {rotation_number} {american_odds}, {budget}
-      Example: "892 -900, 0.001"
-    - Totals: {rotation_number} {over|under} {line} {american_odds}, {budget}
-      Example: "891 over 141.5 -110, 0.001"
-    
-    Maker format (explicit):
-    - Moneyline: make {rotation_number} {american_odds}, {budget}
-      Example: "make 892 -900, 0.001"
-    - Totals: make {rotation_number} {over|under} {line} {american_odds}, {budget}
-      Example: "make 891 over 141.5 -110, 0.001"
-    
-    Make both format (totals only, tick-based):
-    - make both {rotation_number} {line}, {offset_ticks} {budget}
-      Example: "make both 891 141.5, 1 0.01"
-    
-    Returns dict with:
-    - For moneyline: rotation_number, juice, amount, market_type="moneyline", execution_mode="taker"|"maker"
-    - For totals: rotation_number, side, line, juice, amount, market_type="totals", execution_mode="taker"|"maker"
-    - For make both: rotation_number, line, offset_ticks, amount, market_type="totals", execution_mode="make_both"
-    Returns None if parsing fails.
-    """
-    msg = msg.strip()
-    
-    # Check for "make both" command first (totals only, tick-based)
-    msg_upper = msg.upper()
-    if msg_upper.startswith("MAKE BOTH "):
-        # Parse: make both <rotation> <line>, <offset_ticks> <budget>
-        # Example: "make both 891 141.5, 1 0.01"
-        remaining = msg[10:].strip()  # Remove "make both " prefix
-        make_both_pattern = r'^(\d+)\s+(\d+\.?\d*),\s*(\d+)\s+(\d+\.?\d*)$'
-        make_both_match = re.match(make_both_pattern, remaining)
-        
-        if make_both_match:
-            rotation_number = int(make_both_match.group(1))
-            line = float(make_both_match.group(2))
-            offset_ticks = int(make_both_match.group(3))
-            amount = float(make_both_match.group(4))
-            
-            return {
-                "rotation_number": rotation_number,
-                "market_type": "totals",
-                "line": line,
-                "offset_ticks": offset_ticks,
-                "amount": amount,
-                "execution_mode": "make_both"
-            }
-        else:
-            # Invalid make both format
-            return None
-    
-    # Check if first token is "make" (case-insensitive)
-    # This determines execution mode
-    execution_mode = "taker"  # Default
-    
-    if msg_upper.startswith("MAKE "):
-        execution_mode = "maker"
-        msg = msg[5:].strip()  # Remove "make " prefix
-        print(f"DEBUG: execution_mode=maker (detected via 'make' prefix)")
-    elif msg_upper.startswith("MAKER "):
-        # Reject "maker" as first token (must use "make")
-        return None
-    elif msg_upper.endswith(" MAKER") or " MAKER " in msg_upper:
-        # Reject trailing "maker" keyword (legacy format not allowed)
-        return None
-    
-    # Try totals format first (more specific)
-    totals_pattern = r'^(\d+)\s+(over|under)\s+(\d+\.?\d*)\s+(-?\d+),\s*(\d+\.?\d*)$'
-    totals_match = re.match(totals_pattern, msg, re.IGNORECASE)
-    
-    if totals_match:
-        rotation_number = int(totals_match.group(1))
-        side = totals_match.group(2).lower()
-        line = float(totals_match.group(3))
-        juice = int(totals_match.group(4))
-        amount = float(totals_match.group(5))
-        
-        return {
-            "rotation_number": rotation_number,
-            "market_type": "totals",
-            "side": side,
-            "line": line,
-            "juice": juice,
-            "amount": amount,
-            "execution_mode": execution_mode
-        }
-    
-    # Try moneyline format
-    moneyline_pattern = r'^(\d+)\s+(-?\d+),\s*(\d+\.?\d*)$'
-    moneyline_match = re.match(moneyline_pattern, msg)
-    
-    if moneyline_match:
-        rotation_number = int(moneyline_match.group(1))
-        juice = int(moneyline_match.group(2))
-        amount = float(moneyline_match.group(3))
-        
-        return {
-            "rotation_number": rotation_number,
-            "market_type": "moneyline",
-            "juice": juice,
-            "amount": amount,
-            "execution_mode": execution_mode
-        }
-    
-    return None
+# Moved to parsing/turnin.py
 
 
 # ============================================================================
@@ -625,152 +448,13 @@ def match_kalshi_event(
 # ============================================================================
 # Price Conversion
 # ============================================================================
-
-def cents_to_american(price_cents: int) -> int:
-    """
-    Convert Kalshi price (cents) to American odds.
-    
-    Args:
-        price_cents: Price in cents (0-100)
-    
-    Returns:
-        American odds (e.g., -110, +150)
-    """
-    if price_cents <= 0 or price_cents >= 100:
-        return 0  # Invalid
-    
-    P = price_cents / 100.0
-    
-    if P >= 0.5:
-        # Favorite (negative odds)
-        odds = int(round(-100.0 * P / (1.0 - P)))
-    else:
-        # Underdog (positive odds)
-        odds = int(round(100.0 * (1.0 - P) / P))
-    
-    return odds
-
-
-def cents_to_american(price_cents: int) -> int:
-    """
-    Convert Kalshi price (cents) to American odds.
-    
-    Args:
-        price_cents: Price in cents (0-100)
-    
-    Returns:
-        American odds (e.g., -110, +150)
-    """
-    if price_cents <= 0 or price_cents >= 100:
-        return 0  # Invalid
-    
-    P = price_cents / 100.0
-    
-    if P >= 0.5:
-        # Favorite (negative odds)
-        odds = int(round(-100.0 * P / (1.0 - P)))
-    else:
-        # Underdog (positive odds)
-        odds = int(round(100.0 * (1.0 - P) / P))
-    
-    return odds
-
-
-def american_to_cents(odds: int) -> int:
-    """
-    Convert American odds to Kalshi price in cents.
-    """
-    if odds < 0:
-        p = (-odds) / ((-odds) + 100.0)
-    else:
-        p = 100.0 / (odds + 100.0)
-    
-    return int(round(p * 100))
+# Moved to pricing/conversion.py
 
 
 # ============================================================================
 # Fee Calculation
 # ============================================================================
-
-def fee_dollars(contracts: int, price_cents: int) -> float:
-    """
-    Calculate trading fees: round up to next cent of 0.07 * C * P * (1-P),
-    where P is price in dollars.
-    """
-    P = price_cents / 100.0
-    raw = config.FEE_RATE * contracts * P * (1.0 - P)
-    return math.ceil(raw * 100.0) / 100.0
-
-
-def maker_fee_cents(price_cents: int, contracts: int = 1) -> int:
-    """
-    Calculate maker fee in cents: ceil(0.0175 * C * P * (1 - P) * 100).
-    
-    Args:
-        price_cents: Fill price in cents
-        contracts: Number of contracts (default 1 for calibration)
-    
-    Returns:
-        Maker fee in cents (rounded up)
-    """
-    P = price_cents / 100.0
-    raw_fee_dollars = 0.0175 * contracts * P * (1.0 - P)
-    fee_cents = math.ceil(raw_fee_dollars * 100.0)
-    return int(fee_cents)
-
-
-def adjust_maker_price_for_fees(limit_price_cents: int) -> Optional[int]:
-    """
-    Adjust maker price downward to account for fees.
-    
-    User's limit_price_cents is interpreted as "max effective price after fees".
-    This function finds the highest postable price such that:
-        post_price_cents + maker_fee(post_price_cents, C=1) <= limit_price_cents
-    
-    Args:
-        limit_price_cents: Maximum effective price (post-fee) in cents
-    
-    Returns:
-        Highest valid post_price_cents, or None if no valid price exists
-    
-    Example:
-        limit_price_cents = 90 (user wants -900, i.e. 90¢ net)
-        Returns ~89 (post at 89¢, fee = 1¢, effective = 90¢)
-    """
-    # Edge case: very low prices
-    if limit_price_cents <= 2:
-        return None
-    
-    # Search downward from limit to find highest valid post price
-    # Start at limit - 1 to ensure we're below (since fee will add)
-    for post_price in range(limit_price_cents - 1, 0, -1):
-        fee_cents = maker_fee_cents(post_price, contracts=1)
-        effective_price = post_price + fee_cents
-        
-        if effective_price <= limit_price_cents:
-            return post_price
-    
-    # No valid price found (shouldn't happen for reasonable limits)
-    return None
-
-
-def level_all_in_cost(contracts: int, price_cents: int) -> float:
-    """
-    Calculate total cost (contracts * price + fees) for a price level.
-    """
-    contract_cost = contracts * (price_cents / 100.0)
-    fees = fee_dollars(contracts, price_cents)
-    return contract_cost + fees
-
-
-def max_affordable_contracts(remaining: float, price_cents: int, available: int) -> int:
-    """
-    Find maximum number of contracts affordable at a given price level.
-    """
-    for c in range(available, 0, -1):
-        if level_all_in_cost(c, price_cents) <= remaining + 1e-9:
-            return c
-    return 0
+# Moved to pricing/fees.py
 
 
 # ============================================================================
@@ -1370,73 +1054,10 @@ def execute_kill(
 # Market Selection
 # ============================================================================
 
-def validate_rotation_parity(rotation_number: int, side: str) -> tuple[bool, Optional[str]]:
-    """
-    Validate rotation parity matches side (safety check).
-    
-    Rules:
-    - Odd rotation number → Over
-    - Even rotation number → Under
-    
-    Args:
-        rotation_number: Rotation number from turn-in
-        side: "over" or "under"
-    
-    Returns:
-        (is_valid, error_message)
-        is_valid: True if parity matches side, False otherwise
-        error_message: None if valid, error message if invalid
-    """
-    is_odd = (rotation_number % 2) == 1
-    expected_side = "over" if is_odd else "under"
-    
-    if side.lower() != expected_side:
-        error = (
-            f"Rotation parity mismatch: Rotation {rotation_number} is "
-            f"{'odd' if is_odd else 'even'} (expects {expected_side}), "
-            f"but turn-in specified {side}. No bet placed."
-        )
-        return False, error
-    
-    return True, None
-
-
-def find_totals_market(
-    markets: List[Dict[str, Any]],
-    side: str,
-    line: float
-) -> Optional[Dict[str, Any]]:
-    """
-    Find totals market matching side and line.
-    
-    Args:
-        markets: List of ALL market dicts for the totals event
-        side: "over" or "under" (used for validation only - side is determined by YES/NO in market)
-        line: Total points line (e.g., 141.5)
-    
-    Returns:
-        Market dict if found, None otherwise
-    
-    Note: Kalshi encodes X.5 totals as integers in the market ticker suffix.
-    Example: 141.5 → market suffix "-141", 165.5 → market suffix "-165"
-    Rule: kalshi_line = int(user_line) (no rounding, no tolerance, no guessing)
-    Inside a totals market, YES = Over, NO = Under.
-    """
-    # Convert line to Kalshi encoding: int(line) for suffix matching
-    # Example: 141.5 → 141, 165.5 → 165
-    kalshi_line_suffix = int(line)
-    target_suffix = f"-{kalshi_line_suffix}"
-    
-    for market in markets:
-        ticker = market.get("ticker", "")
-        
-        # Match by exact suffix (e.g., "-141" for line 141.5)
-        if ticker.endswith(target_suffix):
-            # Found the correct totals market for this line
-            # Side is determined by YES/NO when placing order, not market selection
-            return market
-    
-    return None
+# ============================================================================
+# Validation
+# ============================================================================
+# Moved to parsing/validators.py
 
 
 # ============================================================================
@@ -3118,6 +2739,67 @@ def execute_turnin(turnin: Dict[str, Any], chat_id: Optional[str] = None, cli_mo
 
 
 # ============================================================================
+# Command Reference
+# ============================================================================
+
+def print_command_reference():
+    """
+    Print a comprehensive debrief of all supported commands and their formats.
+    """
+    print("\n" + "="*70)
+    print("COMMAND REFERENCE")
+    print("="*70)
+    print("\n📊 TAKER ORDERS (Cross the book immediately)")
+    print("-" * 70)
+    print("  Moneyline:  <rotation> <american_odds>, <budget>")
+    print("              Example: 892 -900, 0.001")
+    print("              Behavior: Buys YES contracts up to max price, budget in thousands")
+    print()
+    print("  Totals:     <rotation> <over|under> <line> <american_odds>, <budget>")
+    print("              Example: 891 over 141.5 -110, 0.001")
+    print("              Behavior: Buys YES (over) or NO (under) contracts, respects parity")
+    print()
+    print("🔧 MAKER ORDERS (Post-only, fire-and-forget)")
+    print("-" * 70)
+    print("  Moneyline:  make <rotation> <american_odds>, <budget>")
+    print("              Example: make 892 -900, 0.001")
+    print("              Behavior: Posts passive limit order, fee-aware pricing")
+    print()
+    print("  Totals:     make <rotation> <over|under> <line> <american_odds>, <budget>")
+    print("              Example: make 891 over 141.5 -110, 0.001")
+    print("              Behavior: Posts passive limit order on totals market")
+    print()
+    print("📈 MAKE BOTH (Totals only, tick-based)")
+    print("-" * 70)
+    print("  Format:     make both <rotation> <line>, <offset_ticks> <budget>")
+    print("              Example: make both 891 141.5, 1 0.01")
+    print("              Behavior: Posts YES and NO orders, offset ticks behind best bids")
+    print()
+    print("📖 READ-ONLY COMMANDS")
+    print("-" * 70)
+    print("  Totals View: totals <rotation> <line>")
+    print("               Example: totals 891 141.5")
+    print("               Behavior: Shows orderbook summary (TAKE/MAKE prices, liquidity)")
+    print()
+    print("🗑️  ORDER MANAGEMENT")
+    print("-" * 70)
+    print("  Kill All:   kill")
+    print("              Behavior: Cancels all resting orders")
+    print()
+    print("  Kill Roto:  kill <rotation>")
+    print("              Example: kill 892")
+    print("              Behavior: Cancels all resting orders for that rotation")
+    print()
+    print("="*70)
+    print("NOTES:")
+    print("  • Budget is in thousands of dollars (0.001 = $1, 0.5 = $500)")
+    print("  • Rotation parity: odd → Over, even → Under")
+    print("  • Taker orders include fees in budget calculation")
+    print("  • Maker orders adjust price to meet net-of-fees requirement")
+    print("="*70 + "\n")
+
+
+# ============================================================================
 # Initialization
 # ============================================================================
 
@@ -3176,6 +2858,9 @@ def run_telegram():
         return
     
     print("Starting Telegram polling loop...")
+    
+    # Print command reference
+    print_command_reference()
     
     # Send ready message to Telegram
     ready_message = "Bot is ready to receive turn-ins. Caches initialized."
@@ -3259,6 +2944,8 @@ def run_cli():
     """
     Run persistent CLI input loop.
     """
+    # Print command reference
+    print_command_reference()
     print("READY – Enter turn-ins or type 'exit'")
     
     while True:
