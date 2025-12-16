@@ -1,0 +1,378 @@
+league,unabated_name,kalshi_code
+CBB,Abilene Christian,AC
+CBB,Air Force,AF
+CBB,Akron,AKR
+CBB,Alabama,ALA
+CBB,Alabama A&M,AAMU
+CBB,Alabama State,
+CBB,Albany NY,ALB
+CBB,Alcorn State,ALC
+CBB,American,AME
+CBB,Appalachian State,APP
+CBB,Arizona,ARIZ
+CBB,Arizona State,ASU
+CBB,Ark Pine Bluff,UAPB
+CBB,Arkansas,ARK
+CBB,Arkansas Little Rock,UALR
+CBB,Arkansas State,ARST
+CBB,Arlington Baptist Patriots,
+CBB,Army,ARMY
+CBB,Auburn,AUB
+CBB,Austin Peay,PEAY
+CBB,BYU,BYU
+CBB,Ball State,BALL
+CBB,Baylor,BAY
+CBB,Bellarmine,BELL
+CBB,Belmont,BEL
+CBB,Bethesda Flames,
+CBB,Bethune Cookman,BCOOK
+CBB,Binghamton,BING
+CBB,Boise State,BOIS
+CBB,Boston College,BCOOK
+CBB,Boston U,BOS
+CBB,Bowling Green,BGSU
+CBB,Bradley,BRAD
+CBB,Brown,BRO
+CBB,Bryant,BRY
+CBB,Bucknell,BU
+CBB,Buffalo,BUFF
+CBB,Butler,BUT
+CBB,CS Fullerton,CSF
+CBB,Cal Irvine,CSI
+CBB,Cal Poly SLO,POLY
+CBB,Cal Riverside,CSR
+CBB,Cal Santa Barbara,CSB
+CBB,Cal St Northridge,CSN
+CBB,Cal State Bakersfield,CSBA
+CBB,California,CAL
+CBB,California Baptist,CBA
+CBB,Campbell,CMP
+CBB,Canisius,CAN
+CBB,Central Arkansas,CARK
+CBB,Central Connecticut,CCON
+CBB,Central Florida,UCF
+CBB,Central Michigan,CMU
+CBB,Charleston Sou,CHS
+CBB,Charlotte U,CHAR
+CBB,Chattanooga,CHAT
+CBB,Chicago State,CHST
+CBB,Cincinnati,CIN
+CBB,Clemson,CLEM
+CBB,Cleveland State,CLST
+CBB,Coastal Carolina,COCA
+CBB,Colgate,COL
+CBB,College of Charleston,COC
+CBB,Colorado,COL
+CBB,Colorado State,COST
+CBB,Columbia,COLM
+CBB,Connecticut,CONN
+CBB,Coppin State,COPP
+CBB,Cornell,CORN
+CBB,Creighton,CRE
+CBB,Dallas Christian Crusaders,
+CBB,Dartmouth,DART
+CBB,Davidson,DAV
+CBB,Dayton,DAY
+CBB,DePaul,DEP
+CBB,Defiance Yellow Jackets,
+CBB,Delaware,DEL
+CBB,Delaware State,DELST
+CBB,Denver,DEN
+CBB,Detroit,DET
+CBB,Drake,DRK
+CBB,Drexel,DREX
+CBB,Duke,DUKE
+CBB,Duquesne,DUQ
+CBB,Eagles Southwestern Christian,
+CBB,East Carolina,ECU
+CBB,East Tenn State,ETSU
+CBB,East Texas A&M,ETAM
+CBB,Eastern Illinois,EIU
+CBB,Eastern Kentucky,EKU
+CBB,Eastern Michigan,EMU
+CBB,Eastern Washington,EWU
+CBB,Elon,ELON
+CBB,Evansville,EVAN
+CBB,Fairfield,FAIR
+CBB,Fairleigh Dickinson,FD
+CBB,Falcons Kansas Christian,
+CBB,Fla Gulf Coast,FGC
+CBB,Florida,FLA
+CBB,Florida A&M,FAMU
+CBB,Florida Atlantic,FAU
+CBB,Florida International,FIU
+CBB,Florida State,FSU
+CBB,Fordham,FORD
+CBB,Fresno State,FRES
+CBB,Furman,FUR
+CBB,Gardner-Webb,GWEB
+CBB,George Mason,GMU
+CBB,George Washington,GW
+CBB,Georgetown,GTOWN
+CBB,Georgia,UGA
+CBB,Georgia Southern,GSO
+CBB,Georgia State,GST
+CBB,Georgia Tech,GT
+CBB,Gonzaga,GON
+CBB,Grambling,GRAM
+CBB,Grand Canyon,GC
+CBB,Greensboro Pride,
+CBB,Hampton,HAM
+CBB,Harvard,HAR
+CBB,Hawaii,HAW
+CBB,High Point,HP
+CBB,Hofstra,HOF
+CBB,Holy Cross,HC
+CBB,Hou Christian,HOUC
+CBB,Houston,HOUC
+CBB,Howard,HOW
+CBB,IPFW,IPFW
+CBB,IUPUI,IUP
+CBB,Idaho,ID
+CBB,Idaho State,IDST
+CBB,Illinois,ILL
+CBB,Illinois Chicago,UIC
+CBB,Illinois State,ILST
+CBB,Incarnate Word,IW
+CBB,Indiana,IN
+CBB,Indiana State,INST
+CBB,Iona,IONA
+CBB,Iowa,IOWA
+CBB,Iowa State,IST
+CBB,Jackson State,JST
+CBB,Jacksonville,JACK
+CBB,Jacksonville State,JKST
+CBB,James Madison,JMU
+CBB,Kansas,KAN
+CBB,Kansas State,KST
+CBB,Kennesaw St,KNST
+CBB,Kent State,KENT
+CBB,Kentucky,UK
+CBB,LSU,LSU
+CBB,La Salle,LSL
+CBB,Lafayette,LAF
+CBB,Lamar,LAM
+CBB,Le Moyne Dolphins,LMYN
+CBB,Lehigh,LEH
+CBB,Liberty,LIB
+CBB,Lindenwood,LIND
+CBB,Lipscomb,LIP
+CBB,Long Beach State,LBSU
+CBB,Long Island,LIU
+CBB,Longwood,LONG
+CBB,Louisiana Tech,LOU
+CBB,Louisville,LOU
+CBB,Loyola Chicago,LOYC
+CBB,Loyola Maryland,LOYM
+CBB,Loyola Marymount,LMU
+CBB,MD Baltimore Co,UMBC
+CBB,MD Eastern Shore,UMES
+CBB,Maine,MNE
+CBB,Manhattan,MAN
+CBB,Marist,MAR
+CBB,Marquette,MARQ
+CBB,Marshall,MARSH
+CBB,Maryland,MARY
+CBB,Massachusetts,MASS
+CBB,McNeese State,MCNS
+CBB,Memphis,MEM
+CBB,Mercer,MER
+CBB,Mercyhurst,MERCY
+CBB,Merrimack,MRMK
+CBB,Miami Florida,MIA
+CBB,Miami Ohio,MU
+CBB,Michigan,UM
+CBB,Michigan State,MST
+CBB,Middle Tenn St,MID
+CBB,Minnesota,UMN
+CBB,Mississippi,MISS
+CBB,Mississippi State,MSST
+CBB,Mississippi Valley State,MVSU
+CBB,Missouri,MO
+CBB,Missouri State,MOST
+CBB,Mobile Rams,MBU
+CBB,Monmouth,MON
+CBB,Montana,MT
+CBB,Montana State,MTST
+CBB,Morehead State,MORE
+CBB,Morgan State,MORG
+CBB,Mount Marty Lancers,MM
+CBB,Mt. St. Mary's,MSM
+CBB,Murray State,MRST
+CBB,NC Asheville,UNCA
+CBB,NC Greensboro,UNCG
+CBB,NC State,NCST
+CBB,NC Wilmington,UNCW
+CBB,NJIT,NJIT
+CBB,Navy,NAVY
+CBB,Nebraska,NEB
+CBB,Nebraska Omaha,OMA
+CBB,Nevada,NV
+CBB,New Hampshire,UNH
+CBB,New Haven,NH
+CBB,New Mexico,NM
+CBB,New Mexico State,NMST
+CBB,New Orleans,NOR
+CBB,Niagara,NIAG
+CBB,Nicholls State,NICH
+CBB,No. Colorado,NOCO
+CBB,Norfolk State,NORF
+CBB,North Alabama,UNA
+CBB,North Carolina,UNC
+CBB,North Carolina A&T,NCA
+CBB,North Carolina Central,NCC
+CBB,North Dakota,NDSU
+CBB,North Dakota State,NDSU
+CBB,North Florida,UNF
+CBB,North Texas,UNT
+CBB,Northeastern,NE
+CBB,Northern Arizona,UNAZ
+CBB,Northern Illinois,NIU
+CBB,Northern Iowa,UNIU
+CBB,Northern Kentucky,NOKY
+CBB,Northwestern,NW
+CBB,Northwestern State,NWST
+CBB,Notre Dame,NDSU
+CBB,Oakland,OAK
+CBB,Ohio,OHIO
+CBB,Ohio State,OHST
+CBB,Oklahoma,OKLA
+CBB,Oklahoma State,OKST
+CBB,Old Dominion,ODU
+CBB,Oral Roberts,ORU
+CBB,Oregon,ORE
+CBB,Oregon State,ORST
+CBB,Pacific,PAC
+CBB,Penn State,PSU
+CBB,Pennsylvania,PENN
+CBB,Pepperdine,PEPP
+CBB,Pittsburgh,PITT
+CBB,Portland,PORT
+CBB,Portland State,PRTST
+CBB,Prairie View A&M,PVAM
+CBB,Presbyterian,PRPB
+CBB,Princeton,PRIN
+CBB,Providence,PROV
+CBB,Purdue,PUR
+CBB,Queens NC,QU
+CBB,Quinnipiac,QUIN
+CBB,Radford,RAD
+CBB,Rhode Island,RHO
+CBB,Rice,RICE
+CBB,Richmond,RICH
+CBB,Rider,RID
+CBB,Robert Morris,RMU
+CBB,Royals Ecclesia,
+CBB,Rutgers,RUT
+CBB,SE Louisiana,SELA
+CBB,SE Missouri State,SEMO
+CBB,SIU Edwardsville,USI
+CBB,SMU,SMU
+CBB,Sacramento State,SACST
+CBB,Sacred Heart,SH
+CBB,Saint Louis,SLU
+CBB,Saint Marys CA,SMCA
+CBB,Sam Houston St,SHOU
+CBB,Samford,SAMF
+CBB,San Diego,SD
+CBB,San Diego State,SDST
+CBB,San Francisco,SF
+CBB,San Jose State,SJSU
+CBB,Santa Clara,SC
+CBB,Seattle U,SEA
+CBB,Seton Hall,SH
+CBB,Siena,SIEN
+CBB,South Alabama,USA
+CBB,South Carolina,SCAR
+CBB,South Carolina State,SCST
+CBB,South Dakota,SD
+CBB,South Dakota State,SDST
+CBB,South Florida,USF
+CBB,Southern,SOU
+CBB,Southern Illinois,SIU
+CBB,Southern Indiana,SOIN
+CBB,Southern Miss,SOMS
+CBB,Southern Utah,SUU
+CBB,St. Bonaventure,STBO
+CBB,St. Francis PA,STFR
+CBB,St. Johns,SJU
+CBB,St. Josephs,STJO
+CBB,St. Peter's,STPE
+CBB,St. Thomas,STN
+CBB,Stanford,STAN
+CBB,Stephen F. Austin,SFGA
+CBB,Stetson,STET
+CBB,Stonehill,STON
+CBB,Stony Brook,SB
+CBB,Syracuse,SU
+CBB,TCU,TCU
+CBB,Tarleton St,TARL
+CBB,Temple,TEM
+CBB,Tennessee,TENN
+CBB,Tennessee State,TNST
+CBB,Tennessee Tech,TTECH
+CBB,Texas,TEX
+CBB,Texas A&M,TAMU
+CBB,Texas A&M Corpus,TAMUC
+CBB,Texas San Antonio,UTSA
+CBB,Texas Southern,TXSO
+CBB,Texas State,TXST
+CBB,Texas Tech,TTU
+CBB,The Citadel,CIT
+CBB,Tigers Trinity (FL),
+CBB,Toccoa Falls Eagles,
+CBB,Toledo,TOL
+CBB,Towson,TOWS
+CBB,Troy,TROY
+CBB,Tulane,TUL
+CBB,Tulsa,TULS
+CBB,UAB,UAB
+CBB,UC Davis,UCD
+CBB,UC San Diego,UCSD
+CBB,UCLA,UCLA
+CBB,UL Lafayette,ULL
+CBB,UL Monroe,ULM
+CBB,UMKC,UMKC
+CBB,UMass Lowell,UMLW
+CBB,UNLV,UNLV
+CBB,USC,USC
+CBB,USC Upstate,SCUP
+CBB,UT Arlington,UTAR
+CBB,UT Martin,UTM
+CBB,UT Rio Grande Valley,UTRGV
+CBB,UTEP,UTEP
+CBB,Utah,UT
+CBB,Utah State,UTST
+CBB,Utah Tech,UTT
+CBB,Utah Valley,UTV
+CBB,VMI,VMI
+CBB,Va Commonwealth,VCU
+CBB,Valparaiso,VALP
+CBB,Vanderbilt,VAND
+CBB,Vermont,VT
+CBB,Villanova,NOVA
+CBB,Virginia,UVA
+CBB,Virginia Tech,VT
+CBB,Wagner,WAG
+CBB,Wake Forest,WF
+CBB,Washington,WAS
+CBB,Washington State,WAST
+CBB,Weber State,WEB
+CBB,West Georgia,WG
+CBB,West Virginia,WVU
+CBB,Western Carolina,WCAR
+CBB,Western Illinois,WIU
+CBB,Western Kentucky,WKU
+CBB,Western Michigan,WMU
+CBB,Wichita State,WICH
+CBB,William & Mary,WMU
+CBB,Winthrop,WIN
+CBB,Wisc Green Bay,GB
+CBB,Wisc Milwaukee,MIL
+CBB,Wisconsin,WIS
+CBB,Wofford,WO
+CBB,Wright State,WRST
+CBB,Wyoming,WYO
+CBB,Xavier,XAV
+CBB,Yale,YALE
+CBB,Youngstown State,YSU

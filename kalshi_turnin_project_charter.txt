@@ -1,0 +1,157 @@
+KALSHI TELEGRAM TURN-IN EXECUTOR — PROJECT CHARTER (MINIMAL)
+
+PURPOSE
+Build a minimal Python script that executes Kalshi trades based on a
+single structured Telegram message.
+
+This is an execution script, not a platform.
+No abstractions, no retries, no dry-run, no logging framework.
+
+If any step fails to map cleanly, the script should stop and notify
+the user.
+
+--------------------------------------------------
+TURN-IN FORMAT
+--------------------------------------------------
+
+{league} {roto} {team} {juice} {LIVE|PREGAME}, {amount}
+
+Example:
+NHL 2 NJ Devils -113 LIVE, 2.0
+
+Parsing rules:
+- Parsing is case-insensitive
+- Format must match exactly
+- If parsing fails, execution stops
+
+--------------------------------------------------
+BUDGET SEMANTICS
+--------------------------------------------------
+
+- amount is specified in THOUSANDS OF DOLLARS
+- amount represents MAX TOTAL SPEND (including fees)
+- contracts are DERIVED from orderbook liquidity
+
+Example:
+2.0 = $2,000 max spend
+
+HARD GLOBAL LIMIT:
+- Max spend per turn-in = $50 (absolute cap)
+
+Effective budget:
+min(amount * 1000, 50)
+
+--------------------------------------------------
+HIGH-LEVEL FLOW
+--------------------------------------------------
+
+1. Receive Telegram message
+2. Parse turn-in
+3. Query Unabated snapshot
+4. Resolve roto → game (teams + start time)
+5. Normalize team names
+6. Map game to Kalshi event + YES market
+7. Fetch Kalshi orderbook
+8. Build implied YES asks from NO bids
+9. Buy up orderbook up to price limit until budget exhausted
+10. Place Kalshi limit buy orders (YES side)
+11. Send aggregate confirmation back to Telegram
+
+--------------------------------------------------
+TEAM NAME NORMALIZATION
+--------------------------------------------------
+
+Team names differ between Unabated and Kalshi.
+
+A static CSV file must be used:
+team_xref_nhl.csv
+
+Example rows:
+NHL,New Jersey Devils,NJ
+NHL,NJ Devils,NJ
+NHL,Vancouver Canucks,VAN
+
+Rules:
+- Exact match only (case-insensitive)
+- No fuzzy matching
+- If a team name is not found, execution stops
+
+--------------------------------------------------
+KALSHI MECHANICS (ESSENTIAL ONLY)
+--------------------------------------------------
+
+Events & Markets:
+GET /trade-api/v2/events
+  ?series_ticker=KXNHLGAME
+  &status=open
+  &with_nested_markets=true
+
+Each event includes:
+- event_ticker (encodes date + teams)
+- YES market ticker
+- NO market ticker
+
+Orderbook:
+GET /trade-api/v2/markets/{ticker}/orderbook
+
+Orderbook contains BIDS ONLY:
+yes: [[price, qty], ...]
+no:  [[price, qty], ...]
+
+To BUY YES immediately:
+YES_ASK = 100 - NO_BID
+
+--------------------------------------------------
+PRICING & FEES
+--------------------------------------------------
+
+American odds → probability:
+- odds < 0: p = -odds / (-odds + 100)
+- odds > 0: p = 100 / (odds + 100)
+
+Kalshi price (cents):
+price_cents = round(p * 100)
+
+Taker fee:
+fee_dollars = ceil(fee_rate * contracts * p * (1 - p) * 100) / 100
+
+Fee rules:
+- Single hardcoded fee_rate
+- Fees always rounded UP
+- Fees count toward $50 budget
+- Fees are reported in aggregate only
+
+--------------------------------------------------
+EXECUTION RULES
+--------------------------------------------------
+
+- Work internally in Kalshi cents
+- Buy YES only
+- No fractional contracts
+- One limit order per price level
+- Orders placed sequentially
+- Stop immediately when:
+  - budget exhausted OR
+  - implied YES ask > price limit
+
+--------------------------------------------------
+CONFIRMATION OUTPUT (AGGREGATE ONLY)
+--------------------------------------------------
+
+Example response:
+
+Filled NJ Devils (LIVE)
+Contracts: 3
+Avg Price: 44.7
+Total Spend: $49.83
+Fees: $1.92
+
+--------------------------------------------------
+CREDENTIALS
+--------------------------------------------------
+
+This script assumes local access to:
+- Kalshi API key + RSA private key
+- Unabated API key
+
+Credential loading and management are out of scope.

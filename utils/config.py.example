@@ -1,0 +1,30 @@
+"""
+Configuration module for credentials and settings.
+Copy this file to config.py and fill in your actual credentials.
+"""
+
+# Telegram credentials
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+
+# Kalshi API credentials (file paths)
+API_KEY_ID_FILE = "kalshi_api_key_id.txt"    
+PRIVATE_KEY_FILE = "kalshi_private_key.pem"   
+
+# Unabated API
+UNABATED_API_KEY = "YOUR_UNABATED_API_KEY"
+
+# Trading constants
+MAX_BUDGET_DOLLARS = 50.0
+FEE_RATE = 0.07
+
+# League-scoped constants (CBB)
+LEAGUE = "CBB"
+UNABATED_LEAGUE_ID = 4
+KALSHI_SERIES_TICKER = "KXNCAAMBGAME"
+TEAM_XREF_FILE = "team_xref_cbb.csv"
+
+# API endpoints
+UNABATED_PROD_URL = "https://partner-api.unabated.com/api/markets/gameOdds"
+KALSHI_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+
