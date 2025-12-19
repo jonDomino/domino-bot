@@ -1377,8 +1377,8 @@ def determine_execution_price_maker_totals(
     """
     Determine if maker totals order price can be posted without immediately matching.
     
-    For totals maker orders, we check SAME-SIDE bids (not opposite-side).
-    This is different from moneyline maker logic.
+    For totals maker orders, crossing is evaluated against the IMPLIED ASK
+    (derived from the OPPOSITE-side bids). Same-side bids do NOT cause crossing.
     
     Args:
         orderbook: Kalshi orderbook dict with "yes" and "no" bid lists (bid-only per side)
@@ -1386,60 +1386,60 @@ def determine_execution_price_maker_totals(
         limit_price_cents: Proposed limit price in cents
     
     Returns:
-        (is_valid, best_same_side_bid, error_message)
-        is_valid: True if price can be posted without crossing, False otherwise
-        best_same_side_bid: Current best same-side bid (for error messages)
-        error_message: None if valid, error message if invalid
+        (is_valid, best_opposite_bid, error_message)
+        is_valid: True if price can be posted without crossing the implied ask
+        best_opposite_bid: Best bid on the opposite side (used to derive ask)
+        error_message: None if valid, otherwise the rejection reason
     
-    Rules:
-    - OVER (YES): Read YES bids. Reject if post_price >= best_yes_bid
-    - UNDER (NO): Read NO bids. Reject if post_price >= best_no_bid
-    - If same-side bids don't exist: always allow posting (inventing the market)
-    - Never require opposite-side liquidity
+    Rules (maker totals):
+    - YES maker crosses only if limit_price_cents >= implied_yes_ask
+      implied_yes_ask = 100 - best_no_bid (if NO bids exist), else 100
+    - NO  maker crosses only if limit_price_cents >= implied_no_ask
+      implied_no_ask = 100 - best_yes_bid (if YES bids exist), else 100
+    - Posting above same-side best bid is allowed (it improves top-of-book).
+    - Opposite-side liquidity is NOT required (market invention allowed).
     """
     if side == "yes":
-        # Read YES bids (SAME side) for OVER
-        yes_bids = orderbook.get("yes") or []  # Normalize None to []
+        # YES maker: derive implied YES ask from NO bids
+        no_bids = orderbook.get("no") or []
+        best_no_bid = max((b[0] for b in no_bids), default=None)
         
-        if not yes_bids:
-            # No YES bids exist - always allow posting
-            best_yes_bid = None
-            print(f"DEBUG(maker totals): side=YES limit={limit_price_cents} best_same_side_bid=None -> allow_post=True (no same-side bids)")
-            return True, None, None
-        else:
-            # Get best YES bid (last element is best bid)
-            best_yes_bid = yes_bids[-1][0]
-            print(f"DEBUG(maker totals): side=YES limit={limit_price_cents} best_same_side_bid={best_yes_bid} -> ", end="")
+        implied_yes_ask = 100 - best_no_bid if best_no_bid is not None else 100
+        crosses = limit_price_cents >= implied_yes_ask
         
-        # Validation: limit price must be < best same-side bid to avoid crossing
-        if limit_price_cents >= best_yes_bid:
-            print(f"allow_post=False (would cross)")
-            return False, best_yes_bid, f"Limit price {limit_price_cents}¢ would cross the book. Best YES bid: {best_yes_bid}¢"
+        print(
+            f"DEBUG(maker totals): side=YES post={limit_price_cents} "
+            f"best_no_bid={best_no_bid} implied_yes_ask={implied_yes_ask} crosses={crosses}"
+        )
         
-        print(f"allow_post=True")
-        return True, best_yes_bid, None
+        if crosses:
+            return False, best_no_bid, (
+                f"Limit price {limit_price_cents}¢ would cross the book. "
+                f"Implied YES ask: {implied_yes_ask}¢"
+            )
+        
+        return True, best_no_bid, None
     
     elif side == "no":
-        # Read NO bids (SAME side) for UNDER
-        no_bids = orderbook.get("no") or []  # Normalize None to []
+        # NO maker: derive implied NO ask from YES bids
+        yes_bids = orderbook.get("yes") or []
+        best_yes_bid = max((b[0] for b in yes_bids), default=None)
         
-        if not no_bids:
-            # No NO bids exist - always allow posting
-            best_no_bid = None
-            print(f"DEBUG(maker totals): side=NO limit={limit_price_cents} best_same_side_bid=None -> allow_post=True (no same-side bids)")
-            return True, None, None
-        else:
-            # Get best NO bid (last element is best bid)
-            best_no_bid = no_bids[-1][0]
-            print(f"DEBUG(maker totals): side=NO limit={limit_price_cents} best_same_side_bid={best_no_bid} -> ", end="")
+        implied_no_ask = 100 - best_yes_bid if best_yes_bid is not None else 100
+        crosses = limit_price_cents >= implied_no_ask
         
-        # Validation: limit price must be < best same-side bid to avoid crossing
-        if limit_price_cents >= best_no_bid:
-            print(f"allow_post=False (would cross)")
-            return False, best_no_bid, f"Limit price {limit_price_cents}¢ would cross the book. Best NO bid: {best_no_bid}¢"
+        print(
+            f"DEBUG(maker totals): side=NO post={limit_price_cents} "
+            f"best_yes_bid={best_yes_bid} implied_no_ask={implied_no_ask} crosses={crosses}"
+        )
         
-        print(f"allow_post=True")
-        return True, best_no_bid, None
+        if crosses:
+            return False, best_yes_bid, (
+                f"Limit price {limit_price_cents}¢ would cross the book. "
+                f"Implied NO ask: {implied_no_ask}¢"
+            )
+        
+        return True, best_yes_bid, None
     
     else:
         return False, None, f"Invalid side: {side}"
