@@ -79,3 +79,95 @@ def parse_kill_command(msg: str) -> Optional[Dict[str, Any]]:
         }
     
     return None
+
+
+def parse_fair_command(msg: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a fair command message.
+    
+    Format: fair {rotation} {side} {fair_line} [{fair_juice}], {budget}
+    Examples:
+    - "fair 653 over 142.5 100, 0.01"
+    - "fair 653 under 142.5, 0.50"
+    - "fair 653 over 141.5 -110, 2"
+    
+    Returns dict with:
+    - cmd: "fair"
+    - rotation: int
+    - side: "over" | "under"
+    - fair_line: float
+    - fair_juice: int (default = -110 if omitted)
+    - budget: float
+    Returns None if not a fair command.
+    """
+    msg = msg.strip()
+    msg_lower = msg.lower()
+    
+    # Check for "fair" command
+    if not msg_lower.startswith("fair "):
+        return None
+    
+    remaining = msg[5:].strip()  # Remove "fair " prefix
+    
+    # Pattern 1: fair {rotation} {side} {fair_line} {fair_juice}, {budget}
+    pattern1 = r'^(\d+)\s+(over|under)\s+(\d+\.?\d*)\s+(-?\d+),\s*(\d+\.?\d*)$'
+    match1 = re.match(pattern1, remaining, re.IGNORECASE)
+    
+    if match1:
+        rotation = int(match1.group(1))
+        side = match1.group(2).lower()
+        fair_line = float(match1.group(3))
+        fair_juice = int(match1.group(4))
+        budget = float(match1.group(5))
+        
+        return {
+            "cmd": "fair",
+            "rotation": rotation,
+            "side": side,
+            "fair_line": fair_line,
+            "fair_juice": fair_juice,
+            "budget": budget
+        }
+    
+    # Pattern 2: fair {rotation} {side} {fair_line}, {budget} (default fair_juice = -110)
+    pattern2 = r'^(\d+)\s+(over|under)\s+(\d+\.?\d*),\s*(\d+\.?\d*)$'
+    match2 = re.match(pattern2, remaining, re.IGNORECASE)
+    
+    if match2:
+        rotation = int(match2.group(1))
+        side = match2.group(2).lower()
+        fair_line = float(match2.group(3))
+        budget = float(match2.group(4))
+        
+        return {
+            "cmd": "fair",
+            "rotation": rotation,
+            "side": side,
+            "fair_line": fair_line,
+            "fair_juice": -110,  # Default
+            "budget": budget
+        }
+    
+    return None
+
+
+def parse_writeup_command(msg: str) -> Optional[Dict[str, Any]]:
+    """
+    Parse a writeup command message.
+    
+    Format: writeup (single word, no arguments)
+    
+    Returns dict with:
+    - command_type: "writeup"
+    Returns None if not a writeup command.
+    """
+    msg = msg.strip()
+    msg_lower = msg.lower()
+    
+    # Check for "writeup" command (exact match, single word)
+    if msg_lower == "writeup":
+        return {
+            "command_type": "writeup"
+        }
+    
+    return None

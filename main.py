@@ -29,7 +29,7 @@ from utils.kalshi_api import load_creds, make_request
 from pricing.conversion import cents_to_american, american_to_cents
 from pricing.fees import fee_dollars, maker_fee_cents, adjust_maker_price_for_fees, level_all_in_cost, max_affordable_contracts
 from parsing.turnin import parse_turnin
-from parsing.commands import parse_kill_command, parse_totals_command
+from parsing.commands import parse_kill_command, parse_totals_command, parse_fair_command, parse_writeup_command
 from parsing.validators import validate_rotation_parity, find_totals_market
 from pricing.conversion import cents_to_american, american_to_cents
 
@@ -714,6 +714,52 @@ def place_kalshi_order(
 # Order Management (Kill Command)
 # ============================================================================
 
+def fetch_positions(api_key_id: str, private_key_pem: str) -> List[Dict[str, Any]]:
+    """
+    Fetch all market positions for the authenticated user.
+    Always queries Kalshi API live (no session cache).
+    Supports pagination.
+    
+    Uses ONLY market_positions (ignores event_positions).
+    
+    Args:
+        api_key_id: Kalshi API key ID
+        private_key_pem: Kalshi private key PEM
+    
+    Returns:
+        List of market position dicts from market_positions array
+    """
+    path = "/portfolio/positions"
+    all_positions = []
+    cursor = None
+    limit = 200
+    
+    try:
+        while True:
+            params = {
+                "limit": limit
+            }
+            if cursor:
+                params["cursor"] = cursor
+            
+            resp = make_request(api_key_id, private_key_pem, "GET", path, params)
+            
+            # Use ONLY market_positions (ignore event_positions)
+            market_positions = resp.get("market_positions", [])
+            if market_positions:
+                all_positions.extend(market_positions)
+            
+            # Check for pagination cursor
+            cursor = resp.get("cursor") or resp.get("next_cursor")
+            if not cursor:
+                break
+        
+        return all_positions
+    except Exception as e:
+        print(f"❌ Failed to fetch positions: {e}")
+        return []
+
+
 def fetch_open_orders(api_key_id: str, private_key_pem: str) -> List[Dict[str, Any]]:
     """
     Fetch all resting orders for the authenticated user.
@@ -1058,6 +1104,610 @@ def execute_kill(
 # Validation
 # ============================================================================
 # Moved to parsing/validators.py
+
+# ============================================================================
+# Fair Command Implementation
+# ============================================================================
+
+def expected_value(p_win: float, price_cents: int, fee_on_win_cents: float) -> float:
+    """
+    Calculate expected value per contract with fees only on winning outcomes.
+    
+    Args:
+        p_win: Win probability (0.0 to 1.0)
+        price_cents: Price paid/posted in cents
+        fee_on_win_cents: Fee in cents (only applies on win)
+    
+    Returns:
+        Expected value in dollars per contract
+    """
+    P = price_cents / 100.0
+    fee_on_win = fee_on_win_cents / 100.0
+    
+    # EV = p_win * ((1 - P) - fee_on_win) - (1 - p_win) * P
+    ev = p_win * ((1.0 - P) - fee_on_win) - (1.0 - p_win) * P
+    return ev
+
+
+def adjust_probability_for_strike(p_fair: float, side: str, delta_pts: float) -> float:
+    """
+    Adjust fair probability for strike delta using 1pt = 3% rule.
+    
+    Args:
+        p_fair: Fair probability (0.0 to 1.0)
+        side: "over" or "under"
+        delta_pts: strike_line - fair_line
+    
+    Returns:
+        Adjusted win probability (clamped to 0.01-0.99)
+    """
+    if side == "over":
+        p_win = p_fair - delta_pts * 0.03
+    elif side == "under":
+        p_win = p_fair + delta_pts * 0.03
+    else:
+        raise ValueError(f"Invalid side: {side}")
+    
+    return max(0.01, min(0.99, p_win))
+
+
+def select_fair_strikes(event: Dict[str, Any], fair_line: float, api_key_id: str, private_key_pem: str) -> List[Dict[str, Any]]:
+    """
+    Select strikes for fair command (exact match or two nearest).
+    
+    Args:
+        event: Kalshi totals event dict
+        fair_line: User's fair line
+        api_key_id: Kalshi API key ID
+        private_key_pem: Kalshi private key PEM
+    
+    Returns:
+        List of strike dicts:
+        {
+            "strike_line": float,
+            "ticker_yes": str,
+            "ticker_no": str,
+            "delta_pts": float
+        }
+    """
+    event_ticker = event.get("event_ticker")
+    if not event_ticker:
+        return []
+    
+    # Fetch all markets for the event
+    all_markets = fetch_kalshi_markets_for_event(api_key_id, private_key_pem, event_ticker)
+    
+    # Extract available strikes (totals markets have integer-coded suffixes)
+    available_strikes = []
+    for market in all_markets:
+        ticker = market.get("ticker", "")
+        # Totals markets end with -{integer} (e.g., -141 for 141.5 line)
+        if "-" in ticker:
+            suffix = ticker.split("-")[-1]
+            try:
+                strike_int = int(suffix)
+                strike_line = strike_int + 0.5  # Kalshi encodes X.5 totals as integer
+                available_strikes.append({
+                    "strike_line": strike_line,
+                    "ticker": ticker,
+                    "delta_pts": abs(strike_line - fair_line)
+                })
+            except ValueError:
+                continue
+    
+    if not available_strikes:
+        return []
+    
+    # Check for exact match
+    exact_match = None
+    for strike in available_strikes:
+        if abs(strike["strike_line"] - fair_line) < 0.01:
+            exact_match = strike
+            break
+    
+    if exact_match:
+        # Trade only exact match
+        return [{
+            "strike_line": exact_match["strike_line"],
+            "ticker_yes": exact_match["ticker"],  # YES and NO use same ticker in Kalshi totals
+            "ticker_no": exact_match["ticker"],
+            "delta_pts": exact_match["strike_line"] - fair_line
+        }]
+    
+    # Otherwise, find two nearest strikes
+    available_strikes.sort(key=lambda x: x["delta_pts"])
+    nearest_two = available_strikes[:2]
+    
+    result = []
+    for strike in nearest_two:
+        result.append({
+            "strike_line": strike["strike_line"],
+            "ticker_yes": strike["ticker"],
+            "ticker_no": strike["ticker"],
+            "delta_pts": strike["strike_line"] - fair_line
+        })
+    
+    return result
+
+
+def is_price_in_band(price_cents: int) -> bool:
+    """
+    Check if price is within the mandatory [0.40, 0.60] dollar band.
+    
+    Args:
+        price_cents: Price in cents
+    
+    Returns:
+        True if 40 <= price_cents <= 60, False otherwise
+    """
+    return 40 <= price_cents <= 60
+
+
+def evaluate_strike_taker(
+    api_key_id: str,
+    private_key_pem: str,
+    market_ticker: str,
+    side: str,
+    p_win: float,
+    budget_dollars: float,
+    current_exposure: float,
+    max_exposure: float
+) -> Dict[str, Any]:
+    """
+    Evaluate and execute taker fills for a strike.
+    
+    CRITICAL: Only evaluates asks on specified side. Exposure calculated per user spec:
+    - YES-style (over): exposure = qty * (1 - price)
+    - NO-style (under): exposure = qty * price
+    
+    Args:
+        api_key_id: Kalshi API key ID
+        private_key_pem: Kalshi private key PEM
+        market_ticker: Market ticker
+        side: "over" (YES) or "under" (NO)
+        p_win: Win probability for this side
+        budget_dollars: Remaining budget in dollars
+        current_exposure: Current exposure on this side
+        max_exposure: Maximum exposure threshold
+    
+    Returns:
+        Dict with:
+        - filled_contracts: int
+        - total_spend: float
+        - total_fees: float
+        - avg_price_cents: float or None
+        - fills: list of (price_cents, qty) tuples
+        - exposure_increment: float (exposure added by these fills)
+    """
+    print(f"DEBUG(fair taker): side={side} p_win={p_win:.4f} current_exposure=${current_exposure:.2f} max_exposure=${max_exposure:.2f}")
+    
+    # Check exposure limit BEFORE any evaluation
+    if current_exposure >= max_exposure:
+        print(f"DEBUG(fair taker): BLOCKED - exposure limit reached ({current_exposure:.2f} >= {max_exposure:.2f})")
+        return {
+            "filled_contracts": 0,
+            "total_spend": 0.0,
+            "total_fees": 0.0,
+            "avg_price_cents": None,
+            "fills": [],
+            "exposure_increment": 0.0,
+            "reason": "exposure_limit"
+        }
+    
+    orderbook = fetch_orderbook(api_key_id, private_key_pem, market_ticker)
+    if not orderbook:
+        print(f"DEBUG(fair taker): BLOCKED - no orderbook")
+        return {
+            "filled_contracts": 0,
+            "total_spend": 0.0,
+            "total_fees": 0.0,
+            "avg_price_cents": None,
+            "fills": [],
+            "exposure_increment": 0.0,
+            "reason": "no_orderbook"
+        }
+    
+    # Get asks for the specified side ONLY (one-sided enforcement)
+    if side == "over":
+        # YES side: implied asks from NO bids
+        no_bids = orderbook.get("no") or []
+        asks = derive_implied_yes_asks(no_bids)
+        order_side = "yes"
+        print(f"DEBUG(fair taker): Evaluating YES asks only (over side), {len(asks)} levels")
+    else:  # under
+        # NO side: implied asks from YES bids
+        yes_bids = orderbook.get("yes") or []
+        asks = derive_implied_no_asks(yes_bids)
+        order_side = "no"
+        print(f"DEBUG(fair taker): Evaluating NO asks only (under side), {len(asks)} levels")
+    
+    if not asks:
+        print(f"DEBUG(fair taker): No asks available on {side} side")
+        return {
+            "filled_contracts": 0,
+            "total_spend": 0.0,
+            "total_fees": 0.0,
+            "avg_price_cents": None,
+            "fills": [],
+            "exposure_increment": 0.0,
+            "reason": "no_liquidity"
+        }
+    
+    # Track if any asks were in price band
+    asks_in_band = [a for a in asks if is_price_in_band(a[0])]
+    if not asks_in_band:
+        print(f"DEBUG(fair taker): All asks outside price band [40, 60]")
+        return {
+            "filled_contracts": 0,
+            "total_spend": 0.0,
+            "total_fees": 0.0,
+            "avg_price_cents": None,
+            "fills": [],
+            "exposure_increment": 0.0,
+            "reason": "price_band_constraint"
+        }
+    
+    # Evaluate and consume +EV asks (EV >= 0 after TAKER fees)
+    fills = []
+    total_contracts = 0
+    total_spend = 0.0
+    total_fees = 0.0
+    total_price_weighted = 0.0
+    total_exposure = current_exposure
+    remaining_budget = budget_dollars
+    
+    for ask_price_cents, ask_qty in asks:
+        # MANDATORY: Price band constraint [0.40, 0.60] dollars = [40, 60] cents
+        if not is_price_in_band(ask_price_cents):
+            print(f"DEBUG(fair taker): Skipping ask {ask_price_cents}¢ - outside price band [40, 60]")
+            continue
+        
+        # Check EV using TAKER fees (fees only on win)
+        taker_fee_dollars = fee_dollars(1, ask_price_cents)
+        taker_fee_cents = taker_fee_dollars * 100.0
+        
+        ev = expected_value(p_win, ask_price_cents, taker_fee_cents)
+        
+        print(f"DEBUG(fair taker): Ask {ask_price_cents}¢ qty={ask_qty}: EV={ev:.4f}")
+        
+        if ev < 0:
+            print(f"DEBUG(fair taker): Skipping -EV ask")
+            continue  # Skip -EV asks (taker requires EV >= 0)
+        
+        # Calculate exposure per contract (user spec)
+        if side == "over":
+            # YES-style: exposure = qty * (1 - price)
+            exposure_per_contract = 1.0 - (ask_price_cents / 100.0)
+        else:  # under
+            # NO-style: exposure = qty * price
+            exposure_per_contract = ask_price_cents / 100.0
+        
+        # Check if taking full qty would exceed exposure limit
+        potential_exposure = ask_qty * exposure_per_contract
+        if total_exposure + potential_exposure > max_exposure:
+            # Limit qty to stay within exposure
+            exposure_remaining = max_exposure - total_exposure
+            max_qty_by_exposure = int(exposure_remaining / exposure_per_contract)
+            if max_qty_by_exposure <= 0:
+                print(f"DEBUG(fair taker): Exposure limit reached, stopping")
+                break
+            ask_qty = min(ask_qty, max_qty_by_exposure)
+            print(f"DEBUG(fair taker): Limited qty to {ask_qty} due to exposure limit")
+        
+        # Calculate affordable contracts from budget
+        cost_per_contract = (ask_price_cents / 100.0) + taker_fee_dollars
+        affordable = min(ask_qty, int(remaining_budget / cost_per_contract))
+        
+        if affordable == 0:
+            print(f"DEBUG(fair taker): Cannot afford any contracts at {ask_price_cents}¢")
+            continue
+        
+        print(f"DEBUG(fair taker): Placing taker order: {affordable} @ {ask_price_cents}¢")
+        
+        # Place order
+        order_resp = place_kalshi_order(
+            api_key_id=api_key_id,
+            private_key_pem=private_key_pem,
+            market_ticker=market_ticker,
+            count=affordable,
+            price_cents=ask_price_cents,
+            side=order_side,
+            execution_mode="taker"
+        )
+        
+        if not order_resp or not order_resp.get("order"):
+            print(f"DEBUG(fair taker): Order failed, skipping")
+            continue  # Order failed, skip
+        
+        # Assume filled (taker orders fill immediately)
+        filled_qty = affordable
+        fills.append((ask_price_cents, filled_qty))
+        
+        # Update totals
+        total_contracts += filled_qty
+        contract_cost = filled_qty * (ask_price_cents / 100.0)
+        level_fees = fee_dollars(filled_qty, ask_price_cents)
+        total_spend += contract_cost
+        total_fees += level_fees
+        total_price_weighted += filled_qty * ask_price_cents
+        
+        # Update exposure
+        exposure_increment = filled_qty * exposure_per_contract
+        total_exposure += exposure_increment
+        
+        remaining_budget -= (contract_cost + level_fees)
+        
+        print(f"DEBUG(fair taker): Filled {filled_qty} @ {ask_price_cents}¢, exposure += ${exposure_increment:.2f} (total=${total_exposure:.2f})")
+        
+        if remaining_budget <= 0:
+            print(f"DEBUG(fair taker): Budget exhausted")
+            break
+    
+    avg_price_cents = (total_price_weighted / total_contracts) if total_contracts > 0 else None
+    exposure_increment = total_exposure - current_exposure
+    
+    print(f"DEBUG(fair taker): Total fills: {total_contracts} contracts, exposure += ${exposure_increment:.2f}")
+    
+    return {
+        "filled_contracts": total_contracts,
+        "total_spend": total_spend,
+        "total_fees": total_fees,
+        "avg_price_cents": avg_price_cents,
+        "fills": fills,
+        "exposure_increment": exposure_increment,
+        "reason": "success" if total_contracts > 0 else "no_qualifying_asks"
+    }
+
+
+def evaluate_strike_maker(
+    api_key_id: str,
+    private_key_pem: str,
+    market_ticker: str,
+    side: str,
+    p_win: float,
+    budget_dollars: float,
+    current_exposure: float,
+    max_exposure: float
+) -> Dict[str, Any]:
+    """
+    Evaluate and post maker order for a strike (requires +5% ROI).
+    
+    CRITICAL: Enforces EV >= 0.05 * P where P is maker price in dollars.
+    Finds MAXIMUM allowable price that satisfies this constraint.
+    
+    Args:
+        api_key_id: Kalshi API key ID
+        private_key_pem: Kalshi private key PEM
+        market_ticker: Market ticker
+        side: "over" (YES) or "under" (NO)
+        p_win: Win probability for this side
+        budget_dollars: Remaining budget in dollars
+        current_exposure: Current exposure on this side
+        max_exposure: Maximum exposure threshold
+    
+    Returns:
+        Dict with:
+        - posted: bool
+        - price_cents: int or None
+        - contracts: int
+        - order_id: str or None
+        - ev: float (expected value)
+        - reason: str
+    """
+    print(f"DEBUG(fair maker): side={side} p_win={p_win:.4f} current_exposure=${current_exposure:.2f} max_exposure=${max_exposure:.2f}")
+    
+    # Check exposure limit BEFORE any evaluation
+    if current_exposure >= max_exposure:
+        print(f"DEBUG(fair maker): BLOCKED - exposure limit reached ({current_exposure:.2f} >= {max_exposure:.2f})")
+        return {
+            "posted": False,
+            "price_cents": None,
+            "contracts": 0,
+            "order_id": None,
+            "ev": 0.0,
+            "reason": "exposure_limit"
+        }
+    
+    orderbook = fetch_orderbook(api_key_id, private_key_pem, market_ticker)
+    if not orderbook:
+        print(f"DEBUG(fair maker): BLOCKED - no orderbook")
+        return {
+            "posted": False,
+            "price_cents": None,
+            "contracts": 0,
+            "order_id": None,
+            "ev": 0.0,
+            "reason": "no_orderbook"
+        }
+    
+    # Get implied ask for non-crossing rule
+    if side == "over":
+        no_bids = orderbook.get("no") or []
+        if no_bids:
+            best_no_bid = no_bids[-1][0]
+            implied_ask = 100 - best_no_bid
+        else:
+            implied_ask = 100  # No sellers exist
+        order_side = "yes"
+    else:  # under
+        yes_bids = orderbook.get("yes") or []
+        if yes_bids:
+            best_yes_bid = yes_bids[-1][0]
+            implied_ask = 100 - best_yes_bid
+        else:
+            implied_ask = 100
+        order_side = "no"
+    
+    print(f"DEBUG(fair maker): implied_ask={implied_ask}¢")
+    
+    # Solve for MAXIMUM price that meets EV >= 0.05 * P (5% ROI requirement)
+    # EV = p_win * ((1 - P) - fee_on_win) - (1 - p_win) * P
+    # fee_on_win = maker_fee_cents(price_cents, 1) / 100.0 (MAKER fees only)
+    # Constraint: EV >= 0.05 * P (NOT EV >= 0.05, NOT EV >= 0)
+    # Search downward from implied ask to find MAXIMUM valid price
+    
+    best_price_cents = None
+    best_ev = None
+    best_roi = None
+    
+    # Search downward from implied ask to find MAXIMUM valid price
+    # We iterate from high to low, tracking the highest price that satisfies EV >= 0.05 * P
+    # MANDATORY: Restrict search to [40, 60] cents price band
+    max_price = min(implied_ask - 1, 60)  # Cannot exceed 60 cents
+    min_price = 40  # Cannot go below 40 cents
+    
+    print(f"DEBUG(fair maker): Searching prices from {max_price}¢ down to {min_price}¢ for +5% ROI (price band constraint)")
+    
+    for price_cents in range(max_price, min_price - 1, -1):
+        # Check non-crossing
+        if price_cents >= implied_ask:
+            continue
+        
+        # MANDATORY: Price band constraint [0.40, 0.60] dollars = [40, 60] cents
+        if not is_price_in_band(price_cents):
+            continue
+        
+        # Calculate EV using MAKER fees (fees only on win)
+        maker_fee_c = maker_fee_cents(price_cents, 1)
+        ev = expected_value(p_win, price_cents, maker_fee_c)
+        
+        P = price_cents / 100.0
+        roi_requirement = 0.05 * P  # +5% ROI relative to stake
+        
+        # Check if EV meets +5% ROI requirement
+        if ev >= roi_requirement:
+            # This is a valid price - update best if this is higher
+            if best_price_cents is None or price_cents > best_price_cents:
+                best_price_cents = price_cents
+                best_ev = ev
+                best_roi = (ev / P) * 100.0 if P > 0 else 0.0
+                print(f"DEBUG(fair maker): Valid price {price_cents}¢: EV={ev:.4f}, ROI={best_roi:.2f}% (requirement: {roi_requirement:.4f})")
+            # Continue searching downward to find maximum (don't break)
+        else:
+            # Price fails ROI requirement
+            print(f"DEBUG(fair maker): Price {price_cents}¢ fails ROI: EV={ev:.4f} < {roi_requirement:.4f}")
+            # If we've already found a valid price, we've found the maximum (since we're going downward)
+            if best_price_cents is not None:
+                print(f"DEBUG(fair maker): Stopping search - found maximum valid price")
+                break
+    
+    if best_price_cents is None:
+        # Check if price band constraint was the limiting factor
+        # If implied_ask is within band but no price found, it's ROI constraint
+        # If implied_ask is outside band, price band may be the issue
+        if implied_ask < 40 or implied_ask > 60:
+            reason = "price_band_constraint"
+            print(f"DEBUG(fair maker): NO QUALIFYING PRICE - implied ask {implied_ask}¢ outside price band [40, 60]")
+        else:
+            reason = "no_qualifying_price"
+            print(f"DEBUG(fair maker): NO QUALIFYING PRICE - no price found with EV >= 0.05 * P within price band")
+        return {
+            "posted": False,
+            "price_cents": None,
+            "contracts": 0,
+            "order_id": None,
+            "ev": 0.0,
+            "reason": reason
+        }
+    
+    print(f"DEBUG(fair maker): Selected MAXIMUM price: {best_price_cents}¢ (EV={best_ev:.4f}, ROI={best_roi:.2f}%)")
+    
+    # Calculate contracts from remaining budget
+    # Cost per contract = price + maker fee (on fill)
+    # For maker, we need to estimate effective cost
+    effective_price_cents = best_price_cents + maker_fee_cents(best_price_cents, 1)
+    cost_per_contract = effective_price_cents / 100.0
+    
+    max_contracts = int(budget_dollars / cost_per_contract)
+    if max_contracts == 0:
+        return {
+            "posted": False,
+            "price_cents": None,
+            "contracts": 0,
+            "order_id": None,
+            "ev": best_ev,
+            "reason": "insufficient_budget"
+        }
+    
+    # Check exposure limit BEFORE placing order
+    # Exposure calculation per user spec:
+    # YES-style (over): exposure = qty * (1 - price)
+    # NO-style (under): exposure = qty * price
+    if side == "over":
+        # YES-style: exposure = qty * (1 - price)
+        potential_exposure = max_contracts * (1.0 - best_price_cents / 100.0)
+    else:  # under
+        # NO-style: exposure = qty * price
+        potential_exposure = max_contracts * (best_price_cents / 100.0)
+    
+    print(f"DEBUG(fair maker): Exposure check - current=${current_exposure:.2f}, potential=${potential_exposure:.2f}, max=${max_exposure:.2f}")
+    
+    if current_exposure + potential_exposure > max_exposure:
+        # Limit contracts to stay within exposure
+        exposure_remaining = max_exposure - current_exposure
+        if side == "over":
+            max_contracts_by_exposure = int(exposure_remaining / (1.0 - best_price_cents / 100.0))
+        else:
+            max_contracts_by_exposure = int(exposure_remaining / (best_price_cents / 100.0))
+        
+        max_contracts = min(max_contracts, max_contracts_by_exposure)
+        
+        if max_contracts <= 0:
+            print(f"DEBUG(fair maker): BLOCKED - exposure limit would be exceeded")
+            return {
+                "posted": False,
+                "price_cents": best_price_cents,
+                "contracts": 0,
+                "order_id": None,
+                "ev": best_ev,
+                "exposure_increment": 0.0,
+                "reason": "exposure_limit"
+            }
+    
+    # Calculate final exposure increment
+    if side == "over":
+        exposure_increment = max_contracts * (1.0 - best_price_cents / 100.0)
+    else:
+        exposure_increment = max_contracts * (best_price_cents / 100.0)
+    
+    print(f"DEBUG(fair maker): Placing maker order: {max_contracts} @ {best_price_cents}¢, exposure += ${exposure_increment:.2f}")
+    
+    # Place maker order
+    order_resp = place_kalshi_order(
+        api_key_id=api_key_id,
+        private_key_pem=private_key_pem,
+        market_ticker=market_ticker,
+        count=max_contracts,
+        price_cents=best_price_cents,
+        side=order_side,
+        execution_mode="maker"
+    )
+    
+    if not order_resp or not order_resp.get("order"):
+        print(f"DEBUG(fair maker): Order placement failed")
+        return {
+            "posted": False,
+            "price_cents": best_price_cents,
+            "contracts": max_contracts,
+            "order_id": None,
+            "ev": best_ev,
+            "exposure_increment": exposure_increment,
+            "reason": "order_failed"
+        }
+    
+    order_id = order_resp.get("order", {}).get("order_id")
+    
+    print(f"DEBUG(fair maker): Order posted successfully: order_id={order_id}")
+    
+    return {
+        "posted": True,
+        "price_cents": best_price_cents,
+        "contracts": max_contracts,
+        "order_id": order_id,
+        "ev": best_ev,
+        "exposure_increment": exposure_increment,
+        "reason": "success"
+    }
 
 
 # ============================================================================
@@ -2105,6 +2755,733 @@ def execute_totals_view(
     send_response(output, chat_id, cli_mode)
 
 
+def execute_writeup(
+    writeup_command: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    cli_mode: bool = False
+) -> None:
+    """
+    Execute writeup command: output accounting summary of all active totals positions.
+    
+    Uses Kalshi portfolio API with accounting-grade accuracy.
+    Uses ONLY market_positions, actual API fields (total_traded_dollars, fees_paid_dollars).
+    Does NOT estimate or recompute fees or prices.
+    
+    Args:
+        writeup_command: Parsed writeup command dict
+        chat_id: Telegram chat ID (for Telegram mode, but this is CLI-only)
+        cli_mode: If True, print to stdout
+    """
+    # Load credentials
+    try:
+        api_key_id, private_key_pem = load_creds()
+    except FileNotFoundError as e:
+        send_response(f"Missing Kalshi credentials: {e}", chat_id, cli_mode)
+        return
+    
+    # Fetch all market positions
+    positions = fetch_positions(api_key_id, private_key_pem)
+    
+    if not positions:
+        send_response("No active totals positions.", chat_id, cli_mode)
+        return
+    
+    # Identify totals markets
+    totals_series_ticker = "KXNCAAMBTOTAL"
+    totals_positions_after_filter = []
+    
+    for pos in positions:
+        market_ticker = pos.get("ticker", "") or pos.get("market_ticker", "")
+        if not market_ticker:
+            continue
+        
+        # Identify totals markets: ticker must start with totals series ticker
+        if not market_ticker.startswith(totals_series_ticker):
+            continue
+        
+        # Get position (contracts)
+        position = pos.get("position", 0)
+        if position == 0:
+            continue
+        
+        # Derive side from position sign (NO side field in API)
+        if position > 0:
+            totals_side = "over"
+        elif position < 0:
+            totals_side = "under"
+        else:
+            continue  # Already filtered by position == 0 check above
+        
+        # Passed all filters
+        totals_positions_after_filter.append(pos)
+    
+    if not totals_positions_after_filter:
+        send_response("No active totals positions.", chat_id, cli_mode)
+        return
+    
+    # Lazy refresh caches
+    maybe_refresh_unabated_cache()
+    maybe_refresh_kalshi_totals_events_cache(api_key_id, private_key_pem)
+    
+    # Aggregate positions by market_ticker ONLY (side is encoded in position sign)
+    aggregated = {}  # {market_ticker: {contracts, total_traded_dollars, fees_paid_dollars, side}}
+    
+    for pos in totals_positions_after_filter:
+        # These positions already passed all filters, so we can trust:
+        # - ticker exists and starts with KXNCAAMBTOTAL
+        # - position != 0
+        market_ticker = pos.get("ticker", "")
+        position = pos.get("position", 0)
+        
+        # Sanity check (should never trigger since positions already passed filters)
+        if not market_ticker or position == 0:
+            continue
+        
+        # Derive side from position sign (NO side field in API)
+        if position > 0:
+            totals_side = "over"  # YES (long position)
+        elif position < 0:
+            totals_side = "under"  # NO (short position)
+        else:
+            continue  # Skip zero positions
+        
+        # Get accounting fields from API (actual values, not estimates)
+        total_traded_dollars = float(pos.get("total_traded_dollars", 0) or 0)
+        fees_paid_dollars = float(pos.get("fees_paid_dollars", 0) or 0)
+        
+        # Aggregation key: market_ticker ONLY (side is encoded in position sign)
+        # Note: Each market_ticker should only have one side (over OR under), but we track side for output
+        key = market_ticker
+        if key not in aggregated:
+            aggregated[key] = {
+                "contracts": 0,
+                "total_traded_dollars": 0.0,
+                "fees_paid_dollars": 0.0,
+                "side": totals_side  # Store side for this position
+            }
+        
+        # Aggregate: use absolute value of position for contracts
+        aggregated[key]["contracts"] += abs(position)
+        aggregated[key]["total_traded_dollars"] += total_traded_dollars
+        aggregated[key]["fees_paid_dollars"] += fees_paid_dollars
+    
+    if not aggregated:
+        send_response("No active totals positions.", chat_id, cli_mode)
+        return
+    
+    # Build output lines
+    output_lines = []
+    
+    for market_ticker, agg_data in aggregated.items():
+        totals_side = agg_data["side"]  # Get side from aggregated data
+        contracts = agg_data["contracts"]
+        if contracts == 0:
+            continue
+        
+        # Accounting calculations (using actual API values)
+        # Raw inputs from API
+        total_traded_dollars = agg_data["total_traded_dollars"]
+        fees_paid_dollars = agg_data["fees_paid_dollars"]
+        
+        # Step-by-step math: Raw inputs → American odds
+        # CRITICAL: Preserve full floating-point precision throughout. Do NOT round early.
+        # Early rounding (e.g., converting to integer cents) inflates implied odds and must be avoided.
+        print(f"\nDEBUG(writeup): {market_ticker} - American Odds Calculation")
+        print(f"  Raw inputs:")
+        print(f"    total_traded_dollars = ${total_traded_dollars:.6f}")
+        print(f"    fees_paid_dollars = ${fees_paid_dollars:.6f}")
+        print(f"    contracts = {contracts}")
+        
+        # Stake = actual dollars committed (total_traded + fees)
+        # Preserve full precision
+        stake = total_traded_dollars + fees_paid_dollars
+        print(f"  Step 1: stake = total_traded_dollars + fees_paid_dollars = ${total_traded_dollars:.6f} + ${fees_paid_dollars:.6f} = ${stake:.6f}")
+        
+        # Effective price = stake / contracts (includes fees)
+        # Preserve full floating-point precision - do NOT round here
+        effective_price = stake / contracts
+        print(f"  Step 2: effective_price = stake / contracts = ${stake:.6f} / {contracts} = {effective_price:.6f}")
+        
+        # Compute American odds directly from effective_price (full precision)
+        # Do NOT convert to integer cents first - that causes precision loss
+        if effective_price >= 0.5:
+            # Favorite (negative odds): odds = -100 * P / (1 - P)
+            american_odds_float = -100.0 * effective_price / (1.0 - effective_price)
+        else:
+            # Underdog (positive odds): odds = +100 * (1 - P) / P
+            # Equivalently: profit = 1.0 - effective_price, roi = profit / effective_price, odds = +100 * roi
+            profit = 1.0 - effective_price
+            roi = profit / effective_price
+            american_odds_float = 100.0 * roi
+        
+        # Round only at the final output (for display)
+        american_odds = round(american_odds_float)
+        print(f"  Step 3: american_odds calculation:")
+        if effective_price >= 0.5:
+            print(f"    (favorite) american_odds = -100 * {effective_price:.6f} / (1 - {effective_price:.6f}) = {american_odds_float:.6f}")
+        else:
+            profit = 1.0 - effective_price
+            roi = profit / effective_price
+            print(f"    (underdog) profit = 1.0 - {effective_price:.6f} = {profit:.6f}")
+            print(f"    roi = {profit:.6f} / {effective_price:.6f} = {roi:.6f}")
+            print(f"    american_odds = +100 * {roi:.6f} = {american_odds_float:.6f}")
+        print(f"  Step 4: american_odds (rounded) = {american_odds}")
+        
+        # ========================================================================
+        # STEP 1: Parse Kalshi Market Ticker
+        # ========================================================================
+        parts = market_ticker.split("-")
+        if len(parts) < 3:
+            continue
+        
+        # Extract date from middle segment: 25DEC20MOHBALL -> 25DEC20
+        middle_segment = parts[1]  # e.g., "25DEC20MOHBALL"
+        if len(middle_segment) < 7:
+            continue
+        
+        date_token = middle_segment[:7]  # e.g., "25DEC20"
+        team_slug = middle_segment[7:]  # e.g., "MOHBALL"
+        
+        # Parse date: 25DEC20 -> 2025-12-20 (US Eastern)
+        try:
+            yy = date_token[0:2]
+            mmm = date_token[2:5].upper()
+            dd = date_token[5:7]
+            if mmm not in MONTHS:
+                continue
+            yyyy = "20" + yy
+            mm = MONTHS[mmm]
+            event_date_str = f"{yyyy}{mm}{dd}"  # YYYYMMDD format for matching
+        except (ValueError, IndexError):
+            continue
+        
+        # Extract Kalshi strike index and normalize to .5
+        # Kalshi totals tickers always encode integer strikes, but actual exposure is to half-point markets
+        # Therefore: 146 → 146.5, 149 → 149.5
+        try:
+            strike_index = int(parts[-1])
+            kalshi_strike = float(strike_index) + 0.5  # Always append .5 to Kalshi strike
+        except ValueError:
+            continue
+        
+        # ========================================================================
+        # STEP 2: Resolve Teams from Team Slug
+        # ========================================================================
+        all_team_codes = []
+        code_to_name = {}
+        for (league, team_name), code in TEAM_XREF.items():
+            if league.upper() == LEAGUE.upper() and code:
+                code_upper = code.upper()
+                all_team_codes.append(code_upper)
+                code_to_name[code_upper] = team_name
+        
+        # Find team codes that are substrings of the team slug
+        matching_codes = sorted([code for code in all_team_codes if code in team_slug.upper()], key=len, reverse=True)
+        
+        if len(matching_codes) < 2:
+            continue
+        
+        # Get team names by reverse lookup from codes
+        team_names_from_slug = []
+        used_codes = []
+        for code in matching_codes:
+            if code in code_to_name and code not in used_codes:
+                team_names_from_slug.append(code_to_name[code])
+                used_codes.append(code)
+                if len(team_names_from_slug) == 2:
+                    break
+        
+        if len(team_names_from_slug) != 2:
+            continue
+        
+        # Normalize team names for matching (sorted, uppercase)
+        team_a_name = team_names_from_slug[0]
+        team_b_name = team_names_from_slug[1]
+        teams_sorted = sorted([team_a_name.upper(), team_b_name.upper()])
+        
+        # ========================================================================
+        # STEP 3: Identify the Game in Unabated Cache
+        # ========================================================================
+        matching_games = []
+        for roto, game in UNABATED_CACHE["roto_to_game"].items():
+            event_start = game.get("eventStart")
+            if not event_start:
+                continue
+            
+            # Convert Unabated date to US Eastern local date for matching
+            game_date_str = unabated_event_to_kalshi_date(event_start)
+            if game_date_str != event_date_str:
+                continue
+            
+            # Extract teams from Unabated game
+            event_teams_raw = game.get("eventTeams", {})
+            if isinstance(event_teams_raw, dict):
+                event_teams = list(event_teams_raw.values())
+            elif isinstance(event_teams_raw, list):
+                event_teams = event_teams_raw
+            else:
+                continue
+            
+            if len(event_teams) != 2:
+                continue
+            
+            # Resolve team names from Unabated
+            teams_lookup = UNABATED_CACHE["teams"]
+            game_team_names = []
+            for t in event_teams:
+                if not isinstance(t, dict):
+                    continue
+                team_id = t.get("id")
+                if team_id is None:
+                    continue
+                team_info = teams_lookup.get(str(team_id), {})
+                team_name = team_info.get("name", "").strip()
+                if team_name:
+                    game_team_names.append(team_name)
+            
+            if len(game_team_names) != 2:
+                continue
+            
+            # Check if teams match (order-independent)
+            game_teams_sorted = sorted([t.upper() for t in game_team_names])
+            if game_teams_sorted == teams_sorted:
+                matching_games.append((roto, game, game_team_names))
+        
+        if not matching_games:
+            continue
+        
+        # ========================================================================
+        # STEP 4: Resolve Side from Position (already done in aggregation)
+        # totals_side is already set: "over" if position > 0, "under" if position < 0
+        # ========================================================================
+        
+        # ========================================================================
+        # STEP 5: Select Unabated Entry for Rotation Resolution
+        # ========================================================================
+        # Find rotation number that matches the side
+        # Rotation parity: over = odd, under = even
+        matching_rotation = None
+        matching_game = None
+        matching_team_names = None
+        
+        for roto, game, game_team_names in matching_games:
+            # Check if rotation parity matches the side
+            if totals_side == "over" and roto % 2 == 1:  # Odd = over
+                matching_rotation = roto
+                matching_game = game
+                matching_team_names = game_team_names
+                break
+            elif totals_side == "under" and roto % 2 == 0:  # Even = under
+                matching_rotation = roto
+                matching_game = game
+                matching_team_names = game_team_names
+                break
+        
+        if matching_rotation is None:
+            continue
+        
+        # ========================================================================
+        # STEP 6: Enforce Rotation Parity Validation
+        # ========================================================================
+        if totals_side == "over" and matching_rotation % 2 != 1:
+            continue
+        elif totals_side == "under" and matching_rotation % 2 != 0:
+            continue
+        
+        # ========================================================================
+        # STEP 7: Extract Canonical Team Names from Unabated
+        # ========================================================================
+        # Use team names from Unabated (already extracted in Step 5)
+        # Determine away/home order (use order from Unabated eventTeams)
+        away_team = matching_team_names[0]
+        home_team = matching_team_names[1]
+        
+        # ========================================================================
+        # STEP 8: Use Kalshi Strike (preserved from Step 1)
+        # ========================================================================
+        # kalshi_strike is already extracted and preserved
+        
+        # Compute Domino value (in dollars)
+        if american_odds < 0:
+            # Profit if bet wins
+            domino_dollars = stake * (100.0 / abs(american_odds))
+        else:
+            # Risk (stake)
+            domino_dollars = stake
+        
+        # Scale Domino amount to thousands (divide by 1000)
+        domino_thousands = domino_dollars / 1000.0
+        
+        # Format American odds (one decimal, or integer if whole number)
+        if american_odds == int(american_odds):
+            odds_str = str(int(american_odds))
+        else:
+            odds_str = f"{american_odds:.1f}"
+        
+        # Format output line
+        # {rotation} {away}/{home} {over|under} {kalshi_strike}.5 {american_odds} LIVE, Domino = {amount_in_thousands} Kalshi
+        # Use canonical rotation from Unabated and Kalshi strike normalized to .5
+        output_line = f"{matching_rotation} {away_team}/{home_team} {totals_side} {kalshi_strike} {odds_str} LIVE, Domino = {domino_thousands:.5f} Kalshi"
+        output_lines.append(output_line)
+    
+    if not output_lines:
+        send_response("No active totals positions.", chat_id, cli_mode)
+        return
+    
+    # Output all lines
+    output = "\n".join(output_lines)
+    send_response(output, chat_id, cli_mode)
+
+
+def execute_fair_command(
+    fair_cmd: Dict[str, Any],
+    chat_id: Optional[str] = None,
+    cli_mode: bool = False
+) -> None:
+    """
+    Execute fair command: directional fair-value trading on totals markets.
+    
+    Args:
+        fair_cmd: Parsed fair command dict
+        chat_id: Telegram chat ID
+        cli_mode: If True, print to stdout
+    """
+    rotation = fair_cmd["rotation"]
+    side = fair_cmd["side"]
+    fair_line = fair_cmd["fair_line"]
+    fair_juice = fair_cmd["fair_juice"]
+    budget = fair_cmd["budget"]
+    
+    # Convert budget to dollars
+    budget_dollars = min(budget * 1000.0, config.MAX_BUDGET_DOLLARS)
+    
+    # Max exposure per market (conservative threshold)
+    MAX_EXPOSURE_PER_MARKET = 1000.0  # $1000 notional risk per market
+    
+    print(f"DEBUG(fair): rotation={rotation} side={side} fair_line={fair_line} fair_juice={fair_juice} budget=${budget_dollars}")
+    
+    # Convert fair_juice to probability
+    fair_price_cents = american_to_cents(fair_juice)
+    p_fair = fair_price_cents / 100.0
+    
+    print(f"DEBUG(fair): p_fair={p_fair:.4f} (from juice {fair_juice})")
+    
+    # Resolve game
+    maybe_refresh_unabated_cache()
+    game = find_unabated_game_by_roto(rotation)
+    if not game:
+        send_response(f"Rotation {rotation} not found", chat_id, cli_mode)
+        return
+    
+    # Extract teams and build canonical key
+    event_start = game.get("eventStart")
+    event_teams_raw = game.get("eventTeams", {})
+    
+    if isinstance(event_teams_raw, dict):
+        event_teams = list(event_teams_raw.values())
+    elif isinstance(event_teams_raw, list):
+        event_teams = event_teams_raw
+    else:
+        send_response("Invalid Unabated eventTeams format", chat_id, cli_mode)
+        return
+    
+    if not event_start or len(event_teams) != 2:
+        send_response("Could not identify both teams", chat_id, cli_mode)
+        return
+    
+    teams_lookup = UNABATED_CACHE["teams"]
+    team_codes = []
+    team_names = []
+    
+    for t in event_teams:
+        if not isinstance(t, dict):
+            continue
+        team_id = t.get("id")
+        if team_id is None:
+            continue
+        team_info = teams_lookup.get(str(team_id), {})
+        team_name = team_info.get("name", "").strip()
+        if not team_name:
+            continue
+        code = team_to_kalshi_code(LEAGUE, team_name)
+        if code:
+            team_codes.append(code)
+            team_names.append(team_name)
+    
+    if len(team_codes) != 2:
+        send_response("Could not map both teams to Kalshi codes", chat_id, cli_mode)
+        return
+    
+    canonical_key = build_canonical_key(LEAGUE, event_start, team_codes[0], team_codes[1])
+    
+    # Load credentials
+    try:
+        api_key_id, private_key_pem = load_creds()
+    except FileNotFoundError as e:
+        send_response(f"Missing Kalshi credentials: {e}", chat_id, cli_mode)
+        return
+    
+    # Match totals event
+    maybe_refresh_kalshi_totals_events_cache(api_key_id, private_key_pem)
+    matched_event = match_kalshi_event(canonical_key, tuple(team_codes), use_totals_cache=True)
+    
+    if not matched_event:
+        send_response(f"Totals event not found for rotation {rotation}", chat_id, cli_mode)
+        return
+    
+    # Select strikes (sorted by absolute delta from fair for deterministic processing)
+    strikes = select_fair_strikes(matched_event, fair_line, api_key_id, private_key_pem)
+    if not strikes:
+        send_response(f"No totals strikes found for rotation {rotation}", chat_id, cli_mode)
+        return
+    
+    # Sort strikes by absolute delta (process nearest first)
+    strikes.sort(key=lambda s: abs(s["delta_pts"]))
+    
+    print(f"DEBUG(fair): Selected {len(strikes)} strike(s), processing in order of delta")
+    for s in strikes:
+        print(f"DEBUG(fair): Strike {s['strike_line']}: delta={s['delta_pts']:+.1f}pts")
+    
+    # Track inventory per market (exposure = worst-case loss)
+    # Per user spec: YES = qty * (1 - price), NO = qty * price
+    inventory = {}  # {market_ticker: exposure}
+    
+    # PHASE 1: Taker evaluation (sequential, opportunistic budget consumption)
+    # Process each strike sequentially for taker fills
+    strike_data = []  # Store strike info and taker results for maker phase
+    remaining_budget = budget_dollars
+    
+    for strike in strikes:
+        strike_line = strike["strike_line"]
+        delta_pts = strike["delta_pts"]
+        market_ticker = strike["ticker_yes"]  # Same ticker for YES/NO in totals
+        
+        print(f"DEBUG(fair): ===== TAKER PHASE: Processing strike {strike_line}, delta={delta_pts:.1f}pts =====")
+        
+        # Adjust probability
+        p_win = adjust_probability_for_strike(p_fair, side, delta_pts)
+        print(f"DEBUG(fair): p_win={p_win:.4f} (adjusted for delta)")
+        
+        # Get current exposure
+        current_exposure = inventory.get(market_ticker, 0.0)
+        
+        # Check inventory gating
+        if current_exposure >= MAX_EXPOSURE_PER_MARKET:
+            print(f"DEBUG(fair): Skipping strike {strike_line} - exposure limit reached")
+            strike_data.append({
+                "strike_line": strike_line,
+                "delta_pts": delta_pts,
+                "p_win": p_win,
+                "market_ticker": market_ticker,
+                "taker": {"filled_contracts": 0, "exposure_increment": 0.0},
+                "skipped": True
+            })
+            continue
+        
+        # Taker evaluation (one-sided, EV >= 0 after taker fees)
+        print(f"DEBUG(fair): Evaluating taker fills on {side} side only")
+        taker_result = evaluate_strike_taker(
+            api_key_id=api_key_id,
+            private_key_pem=private_key_pem,
+            market_ticker=market_ticker,
+            side=side,
+            p_win=p_win,
+            budget_dollars=remaining_budget,
+            current_exposure=current_exposure,
+            max_exposure=MAX_EXPOSURE_PER_MARKET
+        )
+        
+        print(f"DEBUG(fair): Taker result: {taker_result['filled_contracts']} contracts, ${taker_result['total_spend']:.2f} spent, exposure += ${taker_result.get('exposure_increment', 0.0):.2f}")
+        
+        # Update inventory and budget after taker fills
+        inventory[market_ticker] = current_exposure + taker_result.get("exposure_increment", 0.0)
+        remaining_budget -= (taker_result["total_spend"] + taker_result["total_fees"])
+        print(f"DEBUG(fair): Updated exposure: ${inventory[market_ticker]:.2f}, remaining budget: ${remaining_budget:.2f}")
+        
+        # Store strike data for maker phase
+        strike_data.append({
+            "strike_line": strike_line,
+            "delta_pts": delta_pts,
+            "p_win": p_win,
+            "market_ticker": market_ticker,
+            "taker": taker_result,
+            "skipped": False
+        })
+    
+    # PHASE 2: Maker evaluation (budget split evenly across strikes)
+    # Compute remaining budget after all taker fills
+    maker_budget_total = remaining_budget
+    num_strikes = len(strikes)
+    
+    # Split maker budget evenly across strikes
+    maker_budget_per_strike = maker_budget_total / num_strikes if num_strikes > 0 else 0.0
+    
+    print(f"DEBUG(fair): ===== MAKER PHASE: Total maker budget=${maker_budget_total:.2f}, splitting ${maker_budget_per_strike:.2f} per strike (N={num_strikes}) =====")
+    
+    all_results = []
+    for strike_info in strike_data:
+        strike_line = strike_info["strike_line"]
+        delta_pts = strike_info["delta_pts"]
+        p_win = strike_info["p_win"]
+        market_ticker = strike_info["market_ticker"]
+        taker_result = strike_info["taker"]
+        
+        print(f"DEBUG(fair): ===== MAKER PHASE: Processing strike {strike_line} =====")
+        
+        if strike_info.get("skipped"):
+            all_results.append({
+                "strike_line": strike_line,
+                "delta_pts": delta_pts,
+                "p_win": p_win,
+                "taker": taker_result,
+                "maker": {"posted": False, "reason": "exposure_limit"}
+            })
+            continue
+        
+        # Get current exposure for this market
+        current_exposure = inventory.get(market_ticker, 0.0)
+        
+        # Maker evaluation with allocated budget (evenly split across strikes)
+        maker_result = None
+        if maker_budget_per_strike > 0.01:  # At least $0.01 allocated
+            print(f"DEBUG(fair): Evaluating maker post on {side} side with allocated budget=${maker_budget_per_strike:.2f}")
+            maker_result = evaluate_strike_maker(
+                api_key_id=api_key_id,
+                private_key_pem=private_key_pem,
+                market_ticker=market_ticker,
+                side=side,
+                p_win=p_win,
+                budget_dollars=maker_budget_per_strike,  # Use allocated budget, not remaining_budget
+                current_exposure=current_exposure,
+                max_exposure=MAX_EXPOSURE_PER_MARKET
+            )
+            
+            print(f"DEBUG(fair): Maker result: posted={maker_result.get('posted', False)}, reason={maker_result.get('reason', 'unknown')}")
+            
+            if maker_result.get("posted"):
+                # Update inventory after maker post (budget already allocated, no need to track)
+                maker_exposure_inc = maker_result.get("exposure_increment", 0.0)
+                inventory[market_ticker] += maker_exposure_inc
+                print(f"DEBUG(fair): Maker posted: exposure += ${maker_exposure_inc:.2f} (total=${inventory[market_ticker]:.2f})")
+        else:
+            maker_result = {"posted": False, "reason": "insufficient_allocated_budget"}
+            print(f"DEBUG(fair): Maker skipped: allocated budget too small (${maker_budget_per_strike:.2f})")
+        
+        all_results.append({
+            "strike_line": strike_line,
+            "delta_pts": delta_pts,
+            "p_win": p_win,
+            "taker": taker_result,
+            "maker": maker_result or {"posted": False, "reason": "no_budget"}
+        })
+    
+    # Check if all strikes failed due to price band constraints
+    total_taker_fills = sum(r["taker"]["filled_contracts"] for r in all_results)
+    total_maker_posts = sum(1 for r in all_results if r.get("maker", {}).get("posted", False))
+    
+    # If no fills and no posts, check if all failures were due to price band constraints
+    if total_taker_fills == 0 and total_maker_posts == 0:
+        # Check if ALL strikes failed due to price band constraints
+        all_price_band_failures = True
+        
+        for result in all_results:
+            taker = result["taker"]
+            maker = result.get("maker", {})
+            
+            # Skip strikes that were skipped for exposure limit (not price band)
+            if result.get("skipped", False):
+                all_price_band_failures = False
+                break
+            
+            # Check taker reason
+            taker_reason = taker.get("reason", "")
+            if taker_reason == "price_band_constraint":
+                # Taker failed due to price band - continue
+                continue
+            elif taker_reason in ("exposure_limit", "no_orderbook"):
+                # Taker failed for non-price-band reason
+                all_price_band_failures = False
+                break
+            
+            # Check maker reason
+            maker_reason = maker.get("reason", "")
+            if maker_reason == "price_band_constraint":
+                # Maker failed due to price band - continue
+                continue
+            elif maker_reason in ("exposure_limit", "no_orderbook", "insufficient_allocated_budget", "no_budget"):
+                # Maker failed for non-price-band reason (but these are acceptable if taker also failed due to price band)
+                # Only break if it's a reason that indicates price band wasn't the issue
+                if maker_reason not in ("insufficient_allocated_budget", "no_budget"):
+                    # exposure_limit or no_orderbook means price band wasn't the only issue
+                    all_price_band_failures = False
+                    break
+            elif maker_reason == "no_qualifying_price":
+                # Maker failed due to ROI, not price band - this means price band wasn't the issue
+                all_price_band_failures = False
+                break
+        
+        # If all failures were due to price band constraints, output fallback message
+        if all_price_band_failures:
+            # Verify at least one strike explicitly reported price_band_constraint
+            has_explicit_price_band = any(
+                r["taker"].get("reason") == "price_band_constraint" or 
+                r.get("maker", {}).get("reason") == "price_band_constraint"
+                for r in all_results
+            )
+            
+            if has_explicit_price_band:
+                send_response("No markets available within 40 to 60 cents", chat_id, cli_mode)
+                return
+    
+    # Build output message
+    team_str = f"{team_names[0]} vs {team_names[1]}" if len(team_names) == 2 else f"{team_codes[0]} vs {team_codes[1]}"
+    
+    msg_parts = [
+        f"FAIR: R{rotation} {side.upper()} {fair_line} ({fair_juice})",
+        f"Teams: {team_str}",
+        f"Fair prob: {p_fair:.1%}",
+        ""
+    ]
+    
+    for result in all_results:
+        strike_line = result["strike_line"]
+        delta_pts = result["delta_pts"]
+        p_win = result["p_win"]
+        
+        msg_parts.append(f"Strike {strike_line} (delta: {delta_pts:+.1f}pts, p_win: {p_win:.1%}):")
+        
+        # Taker results
+        taker = result["taker"]
+        if taker["filled_contracts"] > 0:
+            msg_parts.append(
+                f"  TAKER: {taker['filled_contracts']} @ {taker['avg_price_cents']:.1f}¢ "
+                f"(${taker['total_spend']:.2f} + ${taker['total_fees']:.2f} fees)"
+            )
+        else:
+            msg_parts.append("  TAKER: No fills")
+        
+        # Maker results
+        maker = result.get("maker")
+        if maker and maker.get("posted"):
+            msg_parts.append(
+                f"  MAKER: {maker['contracts']} @ {maker['price_cents']}¢ "
+                f"(EV: {maker['ev']:.4f}, ROI: {maker['ev'] / (maker['price_cents']/100.0) * 100:.1f}%)"
+            )
+        elif maker:
+            msg_parts.append(f"  MAKER: Not posted ({maker.get('reason', 'unknown')})")
+        else:
+            msg_parts.append("  MAKER: No budget remaining")
+        
+        msg_parts.append("")
+    
+    # Inventory status
+    total_exposure = sum(inventory.values())
+    msg_parts.append(f"Inventory: ${total_exposure:.2f} exposure on {side.upper()}")
+    msg_parts.append(f"Budget remaining: ${remaining_budget:.2f}")
+    
+    send_response("\n".join(msg_parts), chat_id, cli_mode)
+
+
 # ============================================================================
 # Main Execution Flow
 # ============================================================================
@@ -2895,6 +4272,18 @@ def run_telegram():
                     execute_totals_view(totals_command, chat_id, cli_mode=False)
                     continue
                 
+                # Check for fair command
+                fair_command = parse_fair_command(text)
+                if fair_command:
+                    execute_fair_command(fair_command, chat_id, cli_mode=False)
+                    continue
+                
+                # Check for writeup command
+                writeup_command = parse_writeup_command(text)
+                if writeup_command:
+                    execute_writeup(writeup_command, chat_id, cli_mode=False)
+                    continue
+                
                 # Check for kill command
                 kill_command = parse_kill_command(text)
                 if kill_command:
@@ -2963,6 +4352,20 @@ def run_cli():
             totals_command = parse_totals_command(line)
             if totals_command:
                 execute_totals_view(totals_command, chat_id=None, cli_mode=True)
+                print()  # Blank line for readability
+                continue
+            
+            # Check for fair command
+            fair_command = parse_fair_command(line)
+            if fair_command:
+                execute_fair_command(fair_command, chat_id=None, cli_mode=True)
+                print()  # Blank line for readability
+                continue
+            
+            # Check for writeup command
+            writeup_command = parse_writeup_command(line)
+            if writeup_command:
+                execute_writeup(writeup_command, chat_id=None, cli_mode=True)
                 print()  # Blank line for readability
                 continue
             

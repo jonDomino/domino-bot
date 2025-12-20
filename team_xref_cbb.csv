@@ -59,11 +59,11 @@ CBB,Chicago State,CHST
 CBB,Cincinnati,CIN
 CBB,Clemson,CLEM
 CBB,Cleveland State,CLST
-CBB,Coastal Carolina,COCA
+CBB,Coastal Carolina,CCAR
 CBB,Colgate,COL
 CBB,College of Charleston,COC
 CBB,Colorado,COL
-CBB,Colorado State,COST
+CBB,Colorado State,CSU
 CBB,Columbia,COLM
 CBB,Connecticut,CONN
 CBB,Coppin State,COPP
@@ -180,7 +180,7 @@ CBB,Mercer,MER
 CBB,Mercyhurst,MERCY
 CBB,Merrimack,MRMK
 CBB,Miami Florida,MIA
-CBB,Miami Ohio,MU
+CBB,Miami Ohio,MOH
 CBB,Michigan,UM
 CBB,Michigan State,MST
 CBB,Middle Tenn St,MID
@@ -342,7 +342,7 @@ CBB,UT Martin,UTM
 CBB,UT Rio Grande Valley,UTRGV
 CBB,UTEP,UTEP
 CBB,Utah,UT
-CBB,Utah State,UTST
+CBB,Utah State,USU
 CBB,Utah Tech,UTT
 CBB,Utah Valley,UTV
 CBB,VMI,VMI
