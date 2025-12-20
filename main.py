@@ -2883,24 +2883,17 @@ def execute_writeup(
         total_traded_dollars = agg_data["total_traded_dollars"]
         fees_paid_dollars = agg_data["fees_paid_dollars"]
         
-        # Step-by-step math: Raw inputs → American odds
+        # Accounting calculations (using actual API values)
         # CRITICAL: Preserve full floating-point precision throughout. Do NOT round early.
         # Early rounding (e.g., converting to integer cents) inflates implied odds and must be avoided.
-        print(f"\nDEBUG(writeup): {market_ticker} - American Odds Calculation")
-        print(f"  Raw inputs:")
-        print(f"    total_traded_dollars = ${total_traded_dollars:.6f}")
-        print(f"    fees_paid_dollars = ${fees_paid_dollars:.6f}")
-        print(f"    contracts = {contracts}")
         
         # Stake = actual dollars committed (total_traded + fees)
         # Preserve full precision
         stake = total_traded_dollars + fees_paid_dollars
-        print(f"  Step 1: stake = total_traded_dollars + fees_paid_dollars = ${total_traded_dollars:.6f} + ${fees_paid_dollars:.6f} = ${stake:.6f}")
         
         # Effective price = stake / contracts (includes fees)
         # Preserve full floating-point precision - do NOT round here
         effective_price = stake / contracts
-        print(f"  Step 2: effective_price = stake / contracts = ${stake:.6f} / {contracts} = {effective_price:.6f}")
         
         # Compute American odds directly from effective_price (full precision)
         # Do NOT convert to integer cents first - that causes precision loss
@@ -2916,16 +2909,6 @@ def execute_writeup(
         
         # Round only at the final output (for display)
         american_odds = round(american_odds_float)
-        print(f"  Step 3: american_odds calculation:")
-        if effective_price >= 0.5:
-            print(f"    (favorite) american_odds = -100 * {effective_price:.6f} / (1 - {effective_price:.6f}) = {american_odds_float:.6f}")
-        else:
-            profit = 1.0 - effective_price
-            roi = profit / effective_price
-            print(f"    (underdog) profit = 1.0 - {effective_price:.6f} = {profit:.6f}")
-            print(f"    roi = {profit:.6f} / {effective_price:.6f} = {roi:.6f}")
-            print(f"    american_odds = +100 * {roi:.6f} = {american_odds_float:.6f}")
-        print(f"  Step 4: american_odds (rounded) = {american_odds}")
         
         # ========================================================================
         # STEP 1: Parse Kalshi Market Ticker
